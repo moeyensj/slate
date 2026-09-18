@@ -110,6 +110,17 @@ class Base(unittest.TestCase):
         )
         if tracker_dir is not None:
             toml += f'dir = "{tracker_dir}"\n'
+        # A deterministic volatile prefix that cannot match a temp dir. On Linux
+        # tempfile lands under /tmp, which is in the library's default volatile
+        # list, so tests that leave the default flag every path in the temp KB
+        # as volatile. Tests point their volatile paths at this fake prefix.
+        volatile_line = 'volatile = ["/slate-volatile-test"]\n'
+        if "[experiment]" in extra_toml:
+            extra_toml = extra_toml.replace("[experiment]\n", "[experiment]\n" + volatile_line, 1)
+        else:
+            if extra_toml and not extra_toml.endswith("\n"):
+                extra_toml += "\n"
+            extra_toml += "\n[experiment]\n" + volatile_line
         toml += extra_toml
         with open(os.path.join(root, "slate.toml"), "w") as fh:
             fh.write(toml)

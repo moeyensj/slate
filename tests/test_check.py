@@ -126,11 +126,12 @@ class TestCheckSoft(Base):
     def test_volatile_flagged_and_clean(self):
         kb = self.make_kb()
         rec = os.path.join(kb, "arcs", "a", "experiments", "2026-09-18-x")
-        # A relative (non-volatile) output and an absolute /tmp output.
-        scaffold(rec, outputs="results/x\n/tmp/volatile_out\n")
+        # A relative (non-volatile) output and an output under the fake volatile
+        # prefix the harness configures (see harness.make_kb).
+        scaffold(rec, outputs="results/x\n/slate-volatile-test/volatile_out\n")
         _ok, lines = runs.check(self.cfg(kb), rec)
         vol = [ln for ln in lines if ln.startswith("volatile output")]
-        self.assertEqual(vol, ["volatile output: /tmp/volatile_out"])
+        self.assertEqual(vol, ["volatile output: /slate-volatile-test/volatile_out"])
 
 
 class TestArmParity(Base):
@@ -360,12 +361,11 @@ class TestVerdict(InputsBase):
         self.assertIn("uncommitted changes not fully preserved: repoA", reasons)
 
     def test_no_when_volatile_input(self):
-        import tempfile
-
+        # The volatile check is a prefix test on the declared spec and does not
+        # require the file to exist; point it at the harness's fake volatile
+        # prefix so the result does not depend on where the temp dir lives.
         kb, rec = self.prep()
-        fd, vol = tempfile.mkstemp(dir="/tmp", suffix=".dat")
-        os.close(fd)
-        self.addCleanup(os.remove, vol)
+        vol = "/slate-volatile-test/input.dat"
         self.set_inputs(rec, vol)
         runs.check(self.cfg(kb), rec)
         reasons = self.prov(rec)["reconstructable_reasons"]
