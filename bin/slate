@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Launcher for the slate CLI.
+
+Resolves its own real path (following symlinks), puts ``<repo>/lib`` on
+``sys.path``, points slate at ``<repo>/templates``, and hands off to
+``slate.cli:main``.
+"""
+
+import os
+import sys
+
+_real = os.path.realpath(__file__)
+_repo = os.path.dirname(os.path.dirname(_real))
+
+sys.path.insert(0, os.path.join(_repo, "lib"))
+os.environ.setdefault("SLATE_TEMPLATES", os.path.join(_repo, "templates"))
+
+from slate.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())
