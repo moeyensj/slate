@@ -15,17 +15,22 @@ The `slate` command is at `<SLATE_BIN>`.
    written, stop and report.
 2. Write `run.sh` in the record: the exact commands, re-runnable, starting
    with `set -euo pipefail`. It runs with the record directory as its
-   working directory. Everything the run does must be in this file: a step
-   done by hand is a step nobody can repeat.
+   working directory. Everything the run does must be in this file,
+   including any build: a step done by hand is a step nobody can repeat.
+   Refer to code only as `"$SLATE_REPOS_ROOT/<repo>/..."` and write large
+   outputs only under `"$SLATE_OUT"`. Never write the absolute path of a
+   repository into `run.sh`: a later rerun points `SLATE_REPOS_ROOT` at a
+   reconstruction of the recorded commits, and a hard-coded path would
+   silently run today's code instead.
 3. Write `inputs.txt`: every file or directory the run reads, one absolute
-   path or URI per line: datasets, configuration files, kernels. NEVER copy
+   path or URI per line: datasets, configuration files, kernels. A
+   registered dataset is written `dataset:<slug>` (`slate data list`). NEVER copy
    an input into the record; `slate` records sizes and hashes from where the
    files are. For a comparison of two arms, prefix each arm's files `a:` and
    `b:`. A run with no inputs has the single word `none`.
 4. Write `outputs.txt`: every output the run must produce, one path per
-   line, relative to the record. Small result files go in `results/`; large
-   ones stay outside the knowledge base and are listed by absolute path or
-   URI.
+   line. Small result files go in `results/` (relative to the record);
+   large ones go under `$SLATE_OUT/` and are listed with that prefix.
 5. `slate exp check <EXP_ID>`. Fix what it fails on. Report, do not fix,
    what it only reports: dirty repositories, volatile paths, arm-parity rows
    that Method does not account for, and every reason behind a
