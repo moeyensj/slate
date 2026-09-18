@@ -323,9 +323,14 @@ def _dir_tree(base):
     return files, h.hexdigest()
 
 
+def _record_arc(record_dir):
+    """The arc a record belongs to ('' for a dataset, which has none)."""
+    return records.get_field(_safe_read(os.path.join(record_dir, "README.md")), "arc") or ""
+
+
 def _recoverable_git(cfg, abspath):
     """Return {repo, path, blob} when ``abspath`` is tracked and unmodified, else None."""
-    for name, path in cfg.covered_repos():
+    for name, path in cfg.all_covered_repos():
         repo_abs = os.path.abspath(path)
         rel = os.path.relpath(abspath, repo_abs)
         if rel.startswith(".."):
@@ -544,7 +549,11 @@ def check(cfg, record_dir):
     run_sh_text = _safe_read(os.path.join(record_dir, "run.sh"))
     if cfg.repos_root_dir and cfg.repos_root_dir in run_sh_text:
         lines.append(f"literal repositories-root path in run.sh: {cfg.repos_root_dir}")
-    for name, path in cfg.covered_repos():
+    for binary in gitstate.binaries(cfg):
+        if binary.get("error"):
+            lines.append(f"configured binary not found: {binary['spec']}")
+            reasons.append(f"configured binary not found: {binary['spec']}")
+    for name, path in cfg.covered_repos(_record_arc(record_dir)):
         # The knowledge base holds the record, not the code under test: its
         # push state is in the snapshot but does not decide reconstructability.
         if not cfg.is_kb_path(path) and not gitstate.pushed(path):
@@ -677,7 +686,7 @@ def start(cfg, record_dir, detach=False, repos_root=None):
         lines.append("check failed: not starting")
         return 1, lines
 
-    snap = gitstate.snapshot(cfg)
+    snap = gitstate.snapshot(cfg, _record_arc(record_dir))
     rel = os.path.relpath(os.path.join(record_dir, "README.md"), cfg.root)
     plan = gitstate.plan_commit(cfg.root, rel)
     prov = _load_provenance(record_dir)  # inputs + verdict recorded by check
@@ -1251,7 +1260,7 @@ def _blocked_outside_roots(cfg, abspath):
 
 def _blocked_tracked(cfg, abspath):
     """Keep a file git tracks in any covered repository (git can recover it)."""
-    for name, path in cfg.covered_repos():
+    for name, path in cfg.all_covered_repos():
         repo_abs = os.path.abspath(path)
         rel = os.path.relpath(abspath, repo_abs)
         if rel.startswith(".."):
@@ -1655,7 +1664,7 @@ def _reconstruct(cfg, record_dir, prov, tmp):
     lines = []
     ok = True
     repos = prov.get("repos", {})
-    for name, path in cfg.covered_repos():
+    for name, path in cfg.covered_repos(_record_arc(record_dir)):
         if cfg.is_kb_path(path):
             continue  # the KB holds the record, not the code under test
         rec = repos.get(name)

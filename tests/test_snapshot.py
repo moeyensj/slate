@@ -144,3 +144,73 @@ class TestKbPatchLeavesOutSlateRecords(Base):
         # Without the ignore list the record is embedded: the filter is what excludes it.
         gitstate.write_patch(kb, dest, 1024 * 1024, 256 * 1024)
         self.assertIn("arcs/arc/README.md", open(dest).read())
+
+
+class TestArcRepos(Base):
+    def _workspace(self):
+        kb = self.make_kb(extra_toml="")
+        self.git(kb, "init", "-b", "main")
+        self.git_commit(kb, "add", "-A")
+        self.git_commit(kb, "commit", "-m", "seed")
+        for name in ("alpha", "beta", "gamma"):
+            self.git_init(os.path.join(self.tmp, name))
+        return kb
+
+    def test_arc_repos_override_the_default_and_the_kb_is_always_covered(self):
+        kb = self._workspace()
+        cfg = self.cfg(kb)
+        trk = tracker.build(cfg)
+        arcs.new(cfg, trk, "narrow", "Narrow", "Do it.", repos=["beta"])
+        arcs.new(cfg, trk, "plain", "Plain", "Do it.")
+        self.assertEqual([n for n, _ in cfg.covered_repos("narrow")], ["beta", cfg.name])
+        plain = [n for n, _ in cfg.covered_repos("plain")]
+        self.assertEqual(sorted(plain), sorted(["alpha", "beta", "gamma", cfg.name]))
+        self.assertEqual(list(gitstate.snapshot(cfg, "narrow")["repos"]), ["beta", cfg.name])
+
+    def test_named_default_list_still_covers_the_kb(self):
+        kb = self.make_kb(extra_toml="")
+        with open(os.path.join(kb, "slate.toml")) as fh:
+            toml = fh.read().replace('root = ".."\n', 'root = ".."\ninclude = ["alpha"]\n')
+        with open(os.path.join(kb, "slate.toml"), "w") as fh:
+            fh.write(toml)
+        self.git(kb, "init", "-b", "main")
+        self.git_commit(kb, "add", "-A")
+        self.git_commit(kb, "commit", "-m", "seed")
+        self.git_init(os.path.join(self.tmp, "alpha"))
+        cfg = self.cfg(kb)
+        self.assertEqual([n for n, _ in cfg.covered_repos()], ["alpha", cfg.name])
+
+    def test_union_sees_a_repo_only_one_arc_names(self):
+        kb = self.make_kb(extra_toml="")
+        with open(os.path.join(kb, "slate.toml")) as fh:
+            toml = fh.read().replace('root = ".."\n', 'root = ".."\ninclude = ["alpha"]\n')
+        with open(os.path.join(kb, "slate.toml"), "w") as fh:
+            fh.write(toml)
+        for name in ("alpha", "beta"):
+            self.git_init(os.path.join(self.tmp, name))
+        cfg = self.cfg(kb)
+        arcs.new(cfg, tracker.build(cfg), "b", "B", "Do it.", repos=["beta"])
+        self.assertNotIn("beta", [n for n, _ in cfg.covered_repos()])
+        self.assertIn("beta", [n for n, _ in cfg.all_covered_repos()])
+
+
+class TestMissingBinary(Base):
+    def test_missing_configured_binary_is_reported_and_counts_against_the_verdict(self):
+        extra = '\n[provenance]\nbinaries = ["/nonexistent/libengine.dylib"]\n'
+        kb = self.make_kb(extra_toml=extra)
+        self.cli_run("arc", "new", "arc", "--title", "A", "--directive", "D", cwd=kb)
+        self.cli_run("exp", "new", "arc", "t", "--title", "T", "--hypothesis", "h", cwd=kb)
+        out = self.cli_run("exp", "check", "t", cwd=kb).out
+        self.assertIn("configured binary not found: /nonexistent/libengine.dylib", out)
+        self.assertIn("reconstructable: no", out)
+
+    def test_present_binary_adds_no_reason(self):
+        import sys
+
+        extra = f'\n[provenance]\nbinaries = ["{sys.executable}"]\n'
+        kb = self.make_kb(extra_toml=extra)
+        self.cli_run("arc", "new", "arc", "--title", "A", "--directive", "D", cwd=kb)
+        self.cli_run("exp", "new", "arc", "t", "--title", "T", "--hypothesis", "h", cwd=kb)
+        self.assertNotIn(
+            "configured binary not found", self.cli_run("exp", "check", "t", cwd=kb).out
+        )

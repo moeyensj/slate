@@ -233,10 +233,15 @@ def _human_bytes(n):
 
 
 def cmd_arc_new(args, cfg, trk):
+    repos = [n.strip() for n in (args.repos or "").split(",") if n.strip()]
     slug, arc_dir, err = arcs.new(
-        cfg, trk, args.slug, args.title, args.directive, by=args.by, epic=args.epic
+        cfg, trk, args.slug, args.title, args.directive, by=args.by, epic=args.epic, repos=repos
     )
     _out(arc_dir)
+    covered = [n for n, _ in cfg.covered_repos(slug)]
+    for name in repos:
+        if name not in covered:
+            _out(f"warning: not a git working tree under the repositories root: {name}")
     if err:
         _out(f"tracker error: {err}")
     return 0
@@ -717,6 +722,7 @@ def build_parser():
     a.add_argument("--directive", required=True)
     a.add_argument("--by")
     a.add_argument("--epic")
+    a.add_argument("--repos", help="comma-separated repositories this arc's runs depend on")
     a.set_defaults(func=cmd_arc_new)
     arc_sub.add_parser("list", parents=[common]).set_defaults(func=cmd_arc_list)
     a = arc_sub.add_parser("show", parents=[common])

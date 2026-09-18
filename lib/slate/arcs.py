@@ -34,7 +34,7 @@ def _default_by(cfg):
     return name or "owner"
 
 
-def new(cfg, tracker, slug, title, directive, by=None, epic=None):
+def new(cfg, tracker, slug, title, directive, by=None, epic=None, repos=None):
     """Create an arc folder. Returns (slug, arc_dir, tracker_error)."""
     arc_dir = cfg.arc_dir(slug)
     if os.path.exists(arc_dir):
@@ -51,6 +51,7 @@ def new(cfg, tracker, slug, title, directive, by=None, epic=None):
         "by": by,
         "date": date,
         "tracker": tracker_id,
+        "repos": ", ".join(repos or []),
     }
     records.write(
         os.path.join(arc_dir, "README.md"), util.render(util.load_template("arc.md"), mapping)

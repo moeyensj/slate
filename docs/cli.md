@@ -33,9 +33,10 @@ readme_tree = true         # promote annotates the README directory tree
 
 [repos]
 root = ".."                # relative to the KB root
-include = ["*"]            # "*" = every git working tree directly under root
-                           # (bare repositories are skipped), the KB itself
-                           # included; or a list of names
+include = ["*"]            # the default for arcs that name no repositories:
+                           # "*" = every git working tree directly under root
+                           # (bare repositories are skipped), or a list of
+                           # names. The knowledge base is always covered.
 
 [provenance]
 tools = ["python3 --version"]   # each command's first output line is recorded
@@ -168,8 +169,14 @@ tracker calls, no git calls.
 
 ### Arcs
 
-`slate arc new <slug> --title T --directive TEXT [--by NAME] [--epic ID]`
+`slate arc new <slug> --title T --directive TEXT [--by NAME] [--epic ID] [--repos A,B]`
 creates the arc folder from `templates/arc.md` and `templates/rulings.md`.
+`--repos` names the repositories this arc's runs depend on (linked worktrees
+are entries of their own); it is stored as `repos:` in the arc's README and
+can be edited there. Snapshots, handoffs, pickups and reruns for the arc
+cover those repositories plus the knowledge base; an arc that names none
+gets `[repos] include`. Questions about a file rather than an arc (does git
+track it, can git recover it) look at every repository any arc names.
 With the `bd` tracker and no `--epic`, it creates an epic
 (`bd create --type epic --silent`) and stores its id in `tracker:`.
 
@@ -246,7 +253,8 @@ account for every row; the command only prints them.
 reason per line, printed and written to `provenance.json` (the check writes
 the inputs and the verdict; `exp start` adds the snapshot to the same file).
 Reasons: a covered repository's HEAD is not pushed (the knowledge base
-itself is exempt: it holds the record, not the code under test);
+itself is exempt: it holds the record, not the code under test); a
+`provenance.binaries` entry that does not exist;
 uncommitted changes that were not fully preserved; an input with no hash
 that is neither recoverable from git nor preserved; an input or output
 under a volatile prefix. A hashed input is identified, not stored: repeating

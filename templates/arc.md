@@ -5,6 +5,7 @@ title: {{title}}
 status: active
 created: {{date}}
 tracker: {{tracker}}
+repos: {{repos}}
 ---
 
 # {{title}}

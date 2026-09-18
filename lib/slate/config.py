@@ -295,14 +295,44 @@ class Config:
 
     # -- covered repositories ------------------------------------------
 
-    def covered_repos(self):
-        """Return an ordered list of (name, path) covered by a snapshot."""
+    def arc_repos(self, arc):
+        """Repository names an arc declares in its README (`repos: a, b`), or []."""
+        from . import records
+
+        readme = os.path.join(self.arc_dir(arc), "README.md")
+        try:
+            value = records.get_field(records.read(readme), "repos") or ""
+        except OSError:
+            return []
+        return [n.strip() for n in value.split(",") if n.strip()]
+
+    def all_covered_repos(self):
+        """Every repository any arc or the default covers: for questions about
+        a file ("does git track this?") that must not depend on the arc asked."""
+        from . import scan
+
+        pairs = list(self.covered_repos())
+        seen = {os.path.abspath(p) for _, p in pairs}
+        for arc, _dir in scan.arc_dirs(self):
+            for name, path in self.covered_repos(arc):
+                if os.path.abspath(path) not in seen:
+                    seen.add(os.path.abspath(path))
+                    pairs.append((name, path))
+        return pairs
+
+    def covered_repos(self, arc=None):
+        """Return an ordered list of (name, path) covered by a snapshot.
+
+        An arc that names its own repositories is snapshotted with those; any
+        other arc gets `[repos] include`. The knowledge base is always covered:
+        it holds the plan commit and is what a pickup compares first.
+        """
         from . import gitstate
 
         root = self.repos_root_dir
         pairs = []
         seen = set()
-        include = self.repos_include
+        include = (self.arc_repos(arc) if arc else []) or self.repos_include
         if include == ["*"] or include == "*":
             names = []
             try:
@@ -328,6 +358,9 @@ class Config:
                 path = os.path.join(root, name)
                 if gitstate.is_repo(path):
                     pairs.append((name, path))
+                    seen.add(os.path.abspath(path))
+            if gitstate.is_repo(self.root) and os.path.abspath(self.root) not in seen:
+                pairs.append((self.name, self.root))
         return pairs
 
 

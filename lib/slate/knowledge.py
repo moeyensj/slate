@@ -107,7 +107,7 @@ def _place_in_tree(cfg, note_dir, tree_line):
 def stale(cfg):
     """Return rows for promoted experiments whose measured paths moved on."""
     rows = []
-    repo_paths = dict(cfg.covered_repos())
+    repo_paths = dict(cfg.all_covered_repos())
     for exp_id, d in scan.experiment_dirs(cfg):
         text = records.read(os.path.join(d, "README.md"))
         promoted = records.get_field(text, "promoted_to")

@@ -159,11 +159,11 @@ def subjects(repo: str, a: str, b: str, cap: int):
     return (lines[:cap], len(lines))
 
 
-def snapshot(cfg) -> dict:
+def snapshot(cfg, arc=None) -> dict:
     """Build the snapshot recorded in provenance and handoff state blocks."""
     repos = OrderedDict()
     kb_ignore = cfg.kb_dirty_ignore()
-    for name, path in cfg.covered_repos():
+    for name, path in cfg.covered_repos(arc):
         ahead, behind = ahead_behind(path)
         ignore = kb_ignore if cfg.is_kb_path(path) else None
         repos[name] = {
@@ -186,12 +186,12 @@ def snapshot(cfg) -> dict:
         "hardware": util.hardware(),
         "tools": tools,
         "env": {var: os.environ.get(var, "") for var in cfg.provenance_env},
-        "binaries": _binaries(cfg),
+        "binaries": binaries(cfg),
         "lockfiles": _lockfiles(cfg),
     }
 
 
-def _binaries(cfg) -> list:
+def binaries(cfg) -> list:
     """Record path, size and sha256 of each configured executable."""
     out = []
     for spec in cfg.provenance_binaries:

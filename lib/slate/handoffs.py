@@ -66,7 +66,7 @@ def _landed_section(cfg, arc):
     state = extract_state(records.read(prev[1])) or {}
     prev_repos = state.get("repos", {})
     blocks = []
-    for name, path in cfg.covered_repos():
+    for name, path in cfg.covered_repos(arc):
         rec = prev_repos.get(name)
         if not rec:
             continue
@@ -176,7 +176,7 @@ def new(cfg, tracker, arc, private=False, session=None):
     prior_open = _newest_open(cfg, arc)
     supersedes = prior_open[0] if prior_open else ""
 
-    snap = gitstate.snapshot(cfg)
+    snap = gitstate.snapshot(cfg, arc)
     mapping = {
         "id": hid,
         "arc": arc,
