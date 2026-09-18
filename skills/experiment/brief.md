@@ -23,7 +23,8 @@ The `slate` command is at `<SLATE_BIN>`.
    reconstruction of the recorded commits, and a hard-coded path would
    silently run today's code instead.
 3. Write `inputs.txt`: every file or directory the run reads, one absolute
-   path or URI per line: datasets, configuration files, kernels. A
+   path or URI per line: datasets, configuration files, kernels, and any
+   prebuilt library or executable the run loads that `run.sh` does not build. A
    registered dataset is written `dataset:<slug>` (`slate data list`). NEVER copy
    an input into the record; `slate` records sizes and hashes from where the
    files are. For a comparison of two arms, prefix each arm's files `a:` and

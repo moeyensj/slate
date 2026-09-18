@@ -25,7 +25,11 @@ history, `slate arc show <arc>`.
    the owner's behalf, and never tidy their wording. The directive is what
    later sessions are held to.
 2. Choose a short kebab-case slug and a plain title.
-3. `slate arc new <slug> --title "<title>" --directive "<verbatim>" --by "<owner's name>"`.
+3. Ask which repositories this arc's runs depend on, worktrees included,
+   and pass them as `--repos a,b`. They decide what every snapshot, handoff
+   and rerun for this arc covers; without them the arc gets the knowledge
+   base's default list, which may not include its code at all.
+   `slate arc new <slug> --title "<title>" --directive "<verbatim>" --by "<owner's name>" --repos <a,b>`.
    With the `bd` tracker this also creates the arc's epic; pass
    `--epic <id>` instead when an epic already exists for this work.
 4. Fill the arc README's **State** paragraph with an as-of date, then
