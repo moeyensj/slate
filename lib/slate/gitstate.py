@@ -24,6 +24,21 @@ def git(repo: str, *args):
     )
 
 
+def clone_shared(src: str, dest: str):
+    """Clone ``src`` into ``dest`` sharing objects, with no working tree checkout.
+
+    ``--shared`` references the source's object store rather than copying it, so
+    the clone is fast and read-only against the source; ``--no-checkout`` leaves
+    the reconstruction (a later ``checkout`` of the recorded sha) to the caller.
+    The source working tree is never modified.
+    """
+    return subprocess.run(
+        ["git", "clone", "--shared", "--no-checkout", src, dest],
+        capture_output=True,
+        text=True,
+    )
+
+
 def is_repo(path: str) -> bool:
     if not os.path.isdir(path):
         return False
@@ -236,25 +251,33 @@ def plan_commit(kb_repo: str, rel_path: str):
     return sha or None
 
 
-def write_patch(repo: str, dest: str, cap_bytes: int, preserve_bytes: int) -> dict:
+def write_patch(
+    repo: str, dest: str, cap_bytes: int, preserve_bytes: int, ignore_prefixes=None
+) -> dict:
     """Write the repo's uncommitted state as a single applyable patch.
 
     The patch is ``git diff HEAD --binary`` followed by a ``--no-index`` diff
     for every untracked, unignored file no larger than ``preserve_bytes``, so
     that applying it to a clean checkout recreates those files too. Larger
     untracked files are not embedded but returned in ``large_untracked``. Over
-    ``cap_bytes`` nothing is written.
+    ``cap_bytes`` nothing is written. Paths under ``ignore_prefixes`` are left
+    out: slate's own records are not part of the state a run depends on, and a
+    record must not embed a copy of itself.
 
     Returns ``{"written", "over_cap", "large_untracked", "embedded_untracked"}``.
     """
     parts = []
-    diff = git(repo, "diff", "HEAD", "--binary").stdout
+    ignore = list(ignore_prefixes or [])
+    excludes = [f":(exclude){p.rstrip('/')}" for p in ignore]
+    diff = git(repo, "diff", "HEAD", "--binary", "--", ".", *excludes).stdout
     if diff:
         parts.append(diff)
     large = []
     embedded = 0
     others = git(repo, "ls-files", "--others", "--exclude-standard", "-z").stdout
     for rel in [x for x in others.split("\0") if x]:
+        if any(rel.startswith(p) for p in ignore):
+            continue
         full = os.path.join(repo, rel)
         try:
             size = os.path.getsize(full)

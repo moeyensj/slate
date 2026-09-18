@@ -122,3 +122,25 @@ class TestPushedReason(Base):
         out = self.cli_run("exp", "check", "t", cwd=kb).out
         self.assertIn("not pushed: code", out)
         self.assertNotIn("not pushed: kb", out)
+
+
+class TestKbPatchLeavesOutSlateRecords(Base):
+    def test_patch_has_the_stray_note_but_not_the_arc_records(self):
+        kb = self.make_kb()
+        self.git(kb, "init", "-b", "main")
+        self.git_commit(kb, "add", "-A")
+        self.git_commit(kb, "commit", "-m", "seed")
+        cfg = self.cfg(kb)
+        arcs.new(
+            cfg, tracker.build(cfg), "arc", "Arc title", "Do the thing."
+        )  # untracked, slate's own
+        with open(os.path.join(kb, "NOTES.md"), "w") as fh:
+            fh.write("stray\n")
+        dest = os.path.join(self.tmp, "kb.patch")
+        gitstate.write_patch(kb, dest, 1024 * 1024, 256 * 1024, cfg.kb_dirty_ignore())
+        text = open(dest).read()
+        self.assertIn("NOTES.md", text)
+        self.assertNotIn("arcs/arc/README.md", text)
+        # Without the ignore list the record is embedded: the filter is what excludes it.
+        gitstate.write_patch(kb, dest, 1024 * 1024, 256 * 1024)
+        self.assertIn("arcs/arc/README.md", open(dest).read())

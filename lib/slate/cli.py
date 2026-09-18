@@ -10,6 +10,7 @@ import sys
 from . import (
     arcs,
     config,
+    datasets,
     decisions,
     findings,
     gitstate,
@@ -387,6 +388,13 @@ def cmd_exp_abandon(args, cfg, trk):
     return 0
 
 
+def cmd_exp_rerun(args, cfg, trk):
+    code, lines = runs.rerun(cfg, args.id, force=args.force, keep=args.keep)
+    for line in lines:
+        _out(line)
+    return code
+
+
 def cmd_exp_list(args, cfg, trk):
     arc = None
     if args.arc:
@@ -490,6 +498,137 @@ def cmd_decisions(args, cfg, trk):
         if len(q) > 60:
             q = q[:59] + "…"
         _out(f"{e['full_id']:<14} {blocking:<8} {age:>3}d  {q}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# sweep
+# --------------------------------------------------------------------------
+
+
+def cmd_sweep(args, cfg, trk):
+    arc = None
+    if args.arc:
+        arc, _ = scan.find_arc(cfg, args.arc)
+    if args.confirm:
+        plan = runs.sweep_confirmed(cfg, arc, args.confirm)
+    else:
+        plan = runs.sweep(cfg, arc=arc)
+    executed = bool(args.confirm) and not plan.get("refused")
+    if args.json:
+        _emit_json(plan)
+    else:
+        for line in runs.format_sweep(plan, confirmed=executed):
+            _out(line)
+    failed = any(rec.get("failed") for rec in plan["records"])
+    return 1 if plan.get("refused") or failed else 0
+
+
+# --------------------------------------------------------------------------
+# datasets
+# --------------------------------------------------------------------------
+
+
+def cmd_data_new(args, cfg, trk):
+    _dsid, record_dir = datasets.new(cfg, args.slug, args.title)
+    _out(record_dir)
+    return 0
+
+
+def cmd_data_adopt(args, cfg, trk):
+    _dsid, record_dir = datasets.adopt(cfg, args.slug, args.title, args.paths)
+    _out(record_dir)
+    return 0
+
+
+def cmd_data_check(args, cfg, trk):
+    _did, record_dir = datasets.find(cfg, args.id)
+    ok, lines = runs.check(cfg, record_dir)
+    if args.json:
+        _emit_json({"ok": ok, "lines": lines})
+        return 0 if ok else 1
+    for line in lines:
+        _out(line)
+    _out("check: %s" % ("passed" if ok else "FAILED"))
+    return 0 if ok else 1
+
+
+def cmd_data_start(args, cfg, trk):
+    _did, record_dir = datasets.find(cfg, args.id)
+    code, lines = runs.start(cfg, record_dir, detach=args.detach)
+    for line in lines:
+        _out(line)
+    return code
+
+
+def cmd_data_harvest(args, cfg, trk):
+    rows = runs.harvest(cfg, args.id)
+    for row in rows:
+        _out(row)
+    return 0
+
+
+def cmd_data_list(args, cfg, trk):
+    rows = datasets.listing(cfg)
+    if args.json:
+        _emit_json(rows)
+        return 0
+    _print_table(
+        ["id", "status", "rebuildable", "files", "bytes", "used_by"],
+        [
+            [
+                r["id"],
+                r["status"],
+                r["rebuildable"],
+                str(r["files"]),
+                str(r["bytes"]),
+                str(r["used_by"]),
+            ]
+            for r in rows
+        ],
+    )
+    return 0
+
+
+def cmd_data_show(args, cfg, trk):
+    info = datasets.show(cfg, args.id)
+    if args.json:
+        _emit_json(info)
+        return 0
+    _out(f"{info['id']}  {info['status']}  rebuildable={info['rebuildable']}")
+    _out("parents (upward):")
+    for p in info["parents"]:
+        _out(f"  {p}")
+    _out("used by (downward):")
+    for d in info["dependents"]:
+        _out(f"  {d}")
+    return 0
+
+
+def cmd_data_verify(args, cfg, trk):
+    _did, record_dir = datasets.find(cfg, args.id)
+    ok, diffs, count, total = datasets.verify(cfg, record_dir)
+    if args.json:
+        _emit_json({"ok": ok, "differences": diffs, "files": count, "bytes": total})
+        return 0 if ok else 1
+    _out(f"verify {args.id}: {count} file(s), {total}B")
+    for d in diffs:
+        _out(f"  {d}")
+    _out("verify: %s" % ("ok" if ok else "FAILED"))
+    return 0 if ok else 1
+
+
+def cmd_data_mark(args, cfg, trk):
+    _did, warnings = runs.mark(cfg, args.id, "outputs", args.reason)
+    _out(f"marked {_did}: outputs")
+    for w in warnings:
+        _out(f"warning: {w}")
+    return 0
+
+
+def cmd_data_unmark(args, cfg, trk):
+    _did = runs.unmark(cfg, args.id)
+    _out(f"unmarked {_did}")
     return 0
 
 
@@ -638,6 +777,11 @@ def build_parser():
     e = exp_sub.add_parser("unmark", parents=[common])
     e.add_argument("id")
     e.set_defaults(func=cmd_exp_unmark)
+    e = exp_sub.add_parser("rerun", parents=[common])
+    e.add_argument("id")
+    e.add_argument("--force", action="store_true")
+    e.add_argument("--keep", action="store_true")
+    e.set_defaults(func=cmd_exp_rerun)
 
     # handoff
     ho = sub.add_parser("handoff", parents=[common])
@@ -683,6 +827,50 @@ def build_parser():
     d.add_argument("--arc")
     d.add_argument("--all", action="store_true")
     d.set_defaults(func=cmd_decisions)
+
+    # sweep
+    sw = sub.add_parser("sweep", parents=[common])
+    sw.add_argument("--arc")
+    sw.add_argument("--confirm", metavar="TOKEN", help="the token printed by the dry run")
+    sw.set_defaults(func=cmd_sweep)
+
+    # data (datasets)
+    data = sub.add_parser("data", parents=[common])
+    data_sub = data.add_subparsers(dest="sub")
+    dn = data_sub.add_parser("new", parents=[common])
+    dn.add_argument("slug")
+    dn.add_argument("--title", required=True)
+    dn.set_defaults(func=cmd_data_new)
+    da = data_sub.add_parser("adopt", parents=[common])
+    da.add_argument("slug")
+    da.add_argument("--title", required=True)
+    da.add_argument("paths", nargs="+")
+    da.set_defaults(func=cmd_data_adopt)
+    dc = data_sub.add_parser("check", parents=[common])
+    dc.add_argument("id")
+    dc.set_defaults(func=cmd_data_check)
+    ds = data_sub.add_parser("start", parents=[common])
+    ds.add_argument("id")
+    ds.add_argument("--detach", action="store_true")
+    ds.set_defaults(func=cmd_data_start)
+    dh = data_sub.add_parser("harvest", parents=[common])
+    dh.add_argument("id")
+    dh.set_defaults(func=cmd_data_harvest)
+    dl = data_sub.add_parser("list", parents=[common])
+    dl.set_defaults(func=cmd_data_list)
+    dsh = data_sub.add_parser("show", parents=[common])
+    dsh.add_argument("id")
+    dsh.set_defaults(func=cmd_data_show)
+    dv = data_sub.add_parser("verify", parents=[common])
+    dv.add_argument("id")
+    dv.set_defaults(func=cmd_data_verify)
+    dm = data_sub.add_parser("mark", parents=[common])
+    dm.add_argument("id")
+    dm.add_argument("--reason", default="marked for sweep")
+    dm.set_defaults(func=cmd_data_mark)
+    du = data_sub.add_parser("unmark", parents=[common])
+    du.add_argument("id")
+    du.set_defaults(func=cmd_data_unmark)
 
     # knowledge
     pr = sub.add_parser("promote", parents=[common])

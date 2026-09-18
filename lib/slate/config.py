@@ -188,8 +188,11 @@ class Config:
         exp = data.get("experiment", {}) or {}
         handoff = data.get("handoff", {}) or {}
 
+        cleanup = data.get("cleanup", {}) or {}
+
         self.name = kb.get("name") or os.path.basename(self.root)
         self.arcs = kb.get("arcs", "arcs")
+        self.datasets = kb.get("datasets", "datasets")
         self.readme_tree = bool(kb.get("readme_tree", True))
 
         self.repos_root = repos.get("root", "..")
@@ -213,6 +216,9 @@ class Config:
         self.volatile = exp.get("volatile", ["/tmp", "/private/tmp", "/var/tmp"])
         self.max_hash_mb = int(exp.get("max_hash_mb", 4096))
         self.preserve_kb = int(exp.get("preserve_kb", 256))
+        self.out_root = exp.get("out_root", "") or ""
+
+        self.cleanup_roots = cleanup.get("roots", [])
 
         self.max_lines = int(handoff.get("max_lines", 150))
         self.landed_cap = int(handoff.get("landed_cap", 15))
@@ -225,11 +231,39 @@ class Config:
         return os.path.join(self.root, self.arcs)
 
     @property
+    def datasets_dir(self) -> str:
+        return os.path.join(self.root, self.datasets)
+
+    @property
     def repos_root_dir(self) -> str:
         return os.path.abspath(os.path.join(self.root, self.repos_root))
 
+    @property
+    def out_root_dir(self) -> str:
+        """Absolute large-output root, or '' when outputs stay in the record."""
+        if not self.out_root:
+            return ""
+        return os.path.abspath(os.path.join(self.root, self.out_root))
+
     def arc_dir(self, slug: str) -> str:
         return os.path.join(self.arcs_dir, slug)
+
+    def dataset_dir(self, slug: str) -> str:
+        return os.path.join(self.datasets_dir, slug)
+
+    def cleanup_root_dirs(self):
+        """Absolute prefixes a sweep may delete under: cleanup.roots + out_root.
+
+        Relative entries resolve against the knowledge-base root. The paths are
+        real-path resolved so a symlink cannot smuggle a target outside them.
+        """
+        roots = []
+        for entry in self.cleanup_roots:
+            if entry:
+                roots.append(os.path.realpath(os.path.join(self.root, entry)))
+        if self.out_root_dir:
+            roots.append(os.path.realpath(self.out_root_dir))
+        return roots
 
     def kb_dirty_ignore(self):
         """Repo-relative prefixes ignored in the KB's own dirty count.
@@ -239,7 +273,11 @@ class Config:
         """
         from . import scan
 
-        return [self.arcs.rstrip("/") + "/", scan.PRIVATE_DIR + "/"]
+        return [
+            self.arcs.rstrip("/") + "/",
+            self.datasets.rstrip("/") + "/",
+            scan.PRIVATE_DIR + "/",
+        ]
 
     def is_kb_path(self, path: str) -> bool:
         return os.path.abspath(path) == self.root

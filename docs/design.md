@@ -115,13 +115,41 @@ and on a concluded experiment that is neither cited nor listed as not yet
 synthesized, and warns where a cited experiment is inconclusive, corrected,
 aged or marked for deletion.
 
+## Datasets
+
+A result is only as traceable as its data. A dataset record uses the same
+run engine as an experiment: the recipe is its `run.sh`, the sources and
+parent datasets are its inputs, the dataset's files are its outputs, and a
+verified build writes a manifest of every file with its hash. An existing
+dataset can be adopted: hashed and described, with no recipe, and recorded
+as not rebuildable. Whether a dataset can be rebuilt is computed from its
+recipe, its verdict and its parents, never typed. Lineage reads both ways:
+up to the raw sources, down to every dataset and experiment that used it.
+
+## Reruns
+
+`slate exp rerun` reconstructs each recorded commit in a temporary shared
+clone, applies the recorded uncommitted changes, refuses if any input no
+longer matches its hash, runs the same script with `SLATE_REPOS_ROOT`
+pointing at the reconstruction, and compares outputs with the recorded
+hashes. Run scripts reach code and large outputs only through
+`SLATE_REPOS_ROOT` and `SLATE_OUT` for exactly this reason. The rerun is a
+record of its own, linked to the original, and a failed reproduction is a
+finding.
+
 ## Files and letting go
 
 Because data is referenced, not copied, the record can outlive the data.
-`slate exp files` shows what each experiment holds on disk and whether it
-still matches its recorded hashes. An experiment nobody needs any more is
-marked for deletion, with a reason; marking deletes nothing and is visible
-to the next reader. The record, its hashes and its conclusion always stay.
+`slate exp files` shows what each record holds on disk and whether it still
+matches its recorded hashes. A record nobody needs any more is marked for
+deletion, with a reason; marking deletes nothing and is visible to the next
+reader. `slate sweep` is dry by default and prints, per file, what it would
+delete and why it would keep the rest. It deletes only files under
+configured roots, that git does not track, whose hash still matches the
+record, that no unmarked record shares; it never deletes recursively, never
+touches remote data, and removes a dataset only when the dataset can be
+rebuilt. The record, its hashes, its conclusion and a tombstone of what was
+removed always stay.
 
 ## Promotion and staleness
 

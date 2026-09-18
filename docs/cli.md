@@ -28,6 +28,7 @@ Lives at the knowledge base root. Every key is optional.
 [kb]
 name = "notes"              # default: the directory name
 arcs = "arcs"              # arc folders live here, relative to the KB root
+datasets = "datasets"      # dataset records live here, relative to the KB root
 readme_tree = true         # promote annotates the README directory tree
 
 [repos]
@@ -60,6 +61,13 @@ volatile = ["/tmp", "/private/tmp", "/var/tmp"]
 max_hash_mb = 4096         # files larger than this are sized, not hashed
 preserve_kb = 256          # an input that git cannot recover is kept in the
                            # record when it is no larger than this; 0 = never
+out_root = ""              # where large outputs go: each run gets
+                           # <out_root>/<record id>/ as $SLATE_OUT; empty = the
+                           # record's own results/ directory
+
+[cleanup]
+roots = []                 # `slate sweep` deletes nothing outside these
+                           # prefixes; experiment.out_root is always one of them
 
 [handoff]
 max_lines = 150
@@ -101,11 +109,16 @@ done) and `<!-- slate:after ... -->` (after a run).
     outcome.json                 written when the run exits
     log.txt                      stdout and stderr of run.sh
     results/                     small result files
+<kb>/<datasets>/<dataset>/
+  README.md                      slate: dataset  (purpose, sources, recipe, contents)
+  run.sh  inputs.txt  outputs.txt  provenance.json  outcome.json  log.txt
+  MANIFEST.json                  every file of the dataset: path, size, sha256
 <kb>/.slate-private/<arc>/handoffs/   private handoffs, ignored by git
 <kb>/.slate-private/hash-cache.json   sha256 by path, size and mtime
 ```
 
-Ids: an arc is its slug; an experiment is `<arc>/<date>-<slug>`; a handoff
+Ids: an arc is its slug; a dataset is `dataset:<slug>`; an experiment is
+`<arc>/<date>-<slug>`; a handoff
 is `<arc>/<date>` with `-2`, `-3` appended for later notes on the same day;
 a decision is `<arc>/D-001`. Every command that takes an id also accepts a
 unique suffix of it.
@@ -254,6 +267,17 @@ own session outlives the caller, waits for `run.sh`, and writes
 the command waits and then harvests; with it, it returns at once and prints
 the pid and the log path.
 
+**The run environment.** `run.sh` is started with three variables, and a
+run script refers to code and large outputs only through them, so that the
+same script can later run against a reconstructed tree: `SLATE_RECORD` (the
+record directory), `SLATE_REPOS_ROOT` (the directory holding the covered
+repositories) and `SLATE_OUT` (a directory for large outputs, created
+before the run: `<out_root>/<record id>/`, or the record's `results/` when
+`out_root` is empty). A line of `outputs.txt` may begin with `$SLATE_OUT/`;
+it is expanded before use. `exp check` reports, without failing, a `run.sh`
+that contains the literal path of the repositories root, because a rerun of
+it would execute the present code and not the recorded code.
+
 `slate exp harvest [<id>]` settles every running experiment, or one. For
 each: if `outcome.json` exists, verify the declared outputs (exists,
 non-empty, modified after `started`, size, sha256 unless over
@@ -338,6 +362,92 @@ ruling as the reason.
 
 `slate decisions [--arc ARC] [--all]` prints the queue, blocking first and
 oldest first: id, blocking, age, question truncated.
+
+`slate sweep [--arc ARC] [--confirm TOKEN]` acts on marks. Without
+`--confirm` it deletes nothing and prints, per file of every marked record,
+the decision and its reason, the bytes that a confirmed sweep would free,
+and a token: a digest of exactly the files to be deleted. `--confirm TOKEN`
+rebuilds the plan and deletes only if its token is the one given, so what is
+deleted is what was shown; a mark added or a file changed since the dry run
+is refused with exit `1` and nothing is deleted. A file is
+deleted only when every one of these holds: it is a local path; it lies
+under a `cleanup.roots` prefix or the configured `out_root`; git does not
+track it in any covered repository; its sha256, recomputed now, equals the
+recorded one (a file recorded without a hash is never deleted); and no other
+record that would keep it declares the same path or a directory above it,
+under any role (one run's output is often the next run's input). Another
+record keeps a path when it is unmarked, or when its mark does not cover the
+role under which it declares the path. A
+`dataset:` input is never deleted through an experiment's mark: a dataset
+goes only through its own mark, only when it is `rebuildable: yes`, and only
+when no unmarked record uses it. Directories are never removed recursively:
+the files listed in the record are deleted one by one, a directory left
+empty is removed, and files the record does not list are kept and reported.
+URIs are listed as `remote: not deleted by slate`. A file whose size or
+mtime changed between the plan and the deletion is not deleted, and every
+file that could not be deleted is printed as `FAILED` with the reason (exit
+`1`). A confirmed sweep appends to `cleaned.json` in each record (per sweep:
+the date, the scope, every removed path with its size and sha256), sets
+`cleaned: <date> <scope> <files> <bytes>`, and clears `marked:`. The record
+itself is never touched.
+
+`slate exp rerun <id> [--force] [--keep]` repeats a concluded experiment
+against the recorded state and says whether the result reproduces. It
+refuses when the verdict is `reconstructable: no` (`--force` overrides and
+prints the reasons), and always refuses when a declared input no longer
+matches its recorded hash: a run on different data is a new experiment. It
+builds `<tmp>/<repo>` for every covered repository except the knowledge
+base, from a shared clone checked out at the recorded sha with that
+repository's `dirty/<repo>.patch` applied; the original working trees are
+not touched. It creates a new record `<arc>/<date>-<slug>-rerun` (`-2`, `-3`
+for later ones) with `rerun_of: <id>`, the same hypothesis and plan text,
+and copies of `run.sh`, `inputs.txt` and `outputs.txt`; runs it with
+`SLATE_REPOS_ROOT=<tmp>` and its own `SLATE_OUT`; harvests it; and compares
+each declared output with the original's recorded sha256: `identical`,
+`equivalent` (the original record has an executable `compare.sh` and
+`compare.sh <recorded-or-original-path> <new-path>` exits 0; only possible
+while the original file still exists), or `different`. It writes
+`rerun.json` in the new record (`reproduced: yes`, `no` or `partly`, and the
+per-output table) and prints it. The temporary tree is removed unless
+`--keep`. The rerun record is concluded by hand like any other.
+
+### Datasets
+
+A dataset record says how a dataset was made: where the raw data came from,
+how it was filtered, with which code, from which parent datasets, and
+exactly which files resulted. It uses the experiment run engine: `run.sh`
+is the recipe, `inputs.txt` the sources and parents, `outputs.txt` the
+dataset's files, and check, start and harvest behave as they do for
+experiments. Statuses: `planned`, `running`, `built`, `failed`, `lost`,
+`retired`.
+
+`slate data new <slug> --title T` creates the record from
+`templates/dataset.md`. `slate data check|start|harvest <id>` are the
+experiment commands applied to a dataset record; a harvest that verifies
+every output writes `MANIFEST.json` (every file: path, size, sha256; a tree
+hash over all of them) and sets `status: built`.
+
+`slate data adopt <slug> --title T PATH...` registers a dataset that
+already exists: it hashes the files into `MANIFEST.json` and sets
+`status: built` with no recipe. An adopted dataset is `rebuildable: no`.
+
+`rebuildable:` is computed, never typed: `yes` when the record has a recipe,
+its verdict is `reconstructable: yes`, and every `dataset:` parent is itself
+rebuildable or still matches its manifest.
+
+Any `inputs.txt` line may be `dataset:<slug>`. The check fails when the
+dataset does not exist or is not `built`, verifies its files against the
+manifest (size and mtime through the hash cache; a mismatch is rehashed),
+and records the dataset id and the sha256 of its `MANIFEST.json`. A dataset
+that no longer matches its manifest adds a reason to the verdict.
+
+`slate data list` prints id, status, rebuildable, files, bytes and the
+number of records that use it. `slate data show <id>` prints its lineage:
+parents upward, and downward the datasets and experiments that declare it.
+`slate data verify <id>` rehashes every file against the manifest and exits
+`1` on any difference. `slate data mark|unmark <id>` mark a dataset for the
+sweep; marking warns when any unmarked record uses it or it is not
+rebuildable.
 
 ### Findings
 

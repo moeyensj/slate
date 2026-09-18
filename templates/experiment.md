@@ -14,6 +14,7 @@ finished:
 outcome:
 promoted_to:
 marked:
+cleaned:
 tracker: {{tracker}}
 ---
 

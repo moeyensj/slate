@@ -66,6 +66,63 @@ def experiment_ids(cfg, arc=None):
     return [eid for eid, _ in experiment_dirs(cfg, arc)]
 
 
+DATASET_PREFIX = "dataset:"
+
+
+def dataset_dirs(cfg):
+    """Return ordered (id, dir) datasets; ``id`` is ``dataset:<slug>``."""
+    out = []
+    base = cfg.datasets_dir
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for name in names:
+        if name.startswith("."):
+            continue
+        d = os.path.join(base, name)
+        if os.path.isfile(os.path.join(d, "README.md")):
+            out.append((DATASET_PREFIX + name, d))
+    return out
+
+
+def dataset_ids(cfg):
+    return [did for did, _ in dataset_dirs(cfg)]
+
+
+def record_dirs(cfg):
+    """Return ordered (id, dir) for every record: experiments then datasets."""
+    return experiment_dirs(cfg) + dataset_dirs(cfg)
+
+
+def find_dataset(cfg, given):
+    """Resolve a dataset id to (id, dir); accepts a bare slug or a suffix."""
+    pairs = dict(dataset_dirs(cfg))
+    candidates = list(pairs.keys())
+    # A bare slug (no ``dataset:`` prefix) resolves to its full id.
+    if given in candidates:
+        return given, pairs[given]
+    prefixed = DATASET_PREFIX + given
+    if prefixed in candidates:
+        return prefixed, pairs[prefixed]
+    resolved = records.resolve_id(candidates, given)
+    return resolved, pairs[resolved]
+
+
+def find_record(cfg, given):
+    """Resolve any record id (experiment or dataset) to (id, dir)."""
+    pairs = dict(record_dirs(cfg))
+    candidates = list(pairs.keys())
+    if given not in candidates and DATASET_PREFIX + given in candidates:
+        given = DATASET_PREFIX + given
+    resolved = records.resolve_id(candidates, given)
+    return resolved, pairs[resolved]
+
+
+def record_field(record_dir, key, default=""):
+    return experiment_field(record_dir, key, default)
+
+
 def _handoff_dirs(cfg, arc):
     dirs = [os.path.join(cfg.arc_dir(arc), "handoffs")]
     dirs.append(os.path.join(cfg.root, PRIVATE_DIR, arc, "handoffs"))

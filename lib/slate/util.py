@@ -62,6 +62,11 @@ def user() -> str:
         return os.environ.get("USER", "unknown")
 
 
+def sha256_text(text: str) -> str:
+    """Hex sha256 of a string."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def sha256_file(path: str, chunk: int = 65536) -> str:
     """Stream a file through SHA-256 in fixed-size chunks; never slurps it whole."""
     h = hashlib.sha256()
