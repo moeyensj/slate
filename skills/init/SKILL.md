@@ -10,8 +10,11 @@ allowed-tools: Bash(slate *), Bash(${CLAUDE_PLUGIN_ROOT}/bin/slate *)
 
 Knowledge base: $ARGUMENTS
 Tracker preference set when the plugin was enabled: `${user_config.tracker}`
+(if that still reads as a `user_config` placeholder, no preference was set:
+use `auto`)
 
-(Call `${CLAUDE_PLUGIN_ROOT}/bin/slate` if `slate` is not on the PATH.)
+`slate` below means `${CLAUDE_PLUGIN_ROOT}/bin/slate`: call it by that full path, since
+the plugin's `bin/` is not reliably on the PATH.
 
 slate keeps its records inside a knowledge base: a git repository of notes
 that sits beside, or inside, the code it describes.

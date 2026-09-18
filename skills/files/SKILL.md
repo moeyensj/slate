@@ -10,7 +10,8 @@ allowed-tools: Bash(slate *), Bash(${CLAUDE_PLUGIN_ROOT}/bin/slate *)
 
 Scope: $ARGUMENTS
 
-(Call `${CLAUDE_PLUGIN_ROOT}/bin/slate` if `slate` is not on the PATH.)
+`slate` below means `${CLAUDE_PLUGIN_ROOT}/bin/slate`: call it by that full path, since
+the plugin's `bin/` is not reliably on the PATH.
 
 Experiments reference their inputs and outputs by path and hash; the data
 stays where it was. This command shows what is being held and lets the

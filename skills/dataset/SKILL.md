@@ -9,7 +9,8 @@ allowed-tools: Bash(slate *), Bash(${CLAUDE_PLUGIN_ROOT}/bin/slate *)
 
 Request: $ARGUMENTS
 
-(Call `${CLAUDE_PLUGIN_ROOT}/bin/slate` if `slate` is not on the PATH.)
+`slate` below means `${CLAUDE_PLUGIN_ROOT}/bin/slate`: call it by that full path, since
+the plugin's `bin/` is not reliably on the PATH.
 
 A dataset record answers, for anyone holding the files later: where did this
 come from, what was done to it, and is this still the same data. The data

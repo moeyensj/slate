@@ -9,8 +9,9 @@ allowed-tools: Bash(slate *), Bash(${CLAUDE_PLUGIN_ROOT}/bin/slate *)
 
 Request: $ARGUMENTS
 
-The `slate` command does the bookkeeping (call `${CLAUDE_PLUGIN_ROOT}/bin/slate`
-if `slate` is not on the PATH). You supply the judgment. The record has two
+The `slate` command does the bookkeeping. `slate` below means
+`${CLAUDE_PLUGIN_ROOT}/bin/slate`: call it by that full path, since the
+plugin's `bin/` is not reliably on the PATH. You supply the judgment. The record has two
 halves separated by a rule: the plan, written before the run, and the
 result, written after. Never edit the plan after the run starts.
 

@@ -9,7 +9,8 @@ allowed-tools: Bash(slate *), Bash(${CLAUDE_PLUGIN_ROOT}/bin/slate *)
 
 Target: $ARGUMENTS
 
-(Call `${CLAUDE_PLUGIN_ROOT}/bin/slate` if `slate` is not on the PATH.)
+`slate` below means `${CLAUDE_PLUGIN_ROOT}/bin/slate`: call it by that full path, since
+the plugin's `bin/` is not reliably on the PATH.
 
 Arc folders hold the working record. The rest of the knowledge base holds
 what stays true after the arc closes. Promotion moves a conclusion from one

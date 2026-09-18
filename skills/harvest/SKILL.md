@@ -9,8 +9,10 @@ allowed-tools: Bash(slate *), Bash(${CLAUDE_PLUGIN_ROOT}/bin/slate *)
 
 Target: $ARGUMENTS (empty means every running experiment)
 
-Run `slate exp harvest $ARGUMENTS` (call `${CLAUDE_PLUGIN_ROOT}/bin/slate`
-if `slate` is not on the PATH). It checks each running experiment: exit
+`slate` below means `${CLAUDE_PLUGIN_ROOT}/bin/slate`: call it by that full
+path, since the plugin's `bin/` is not reliably on the PATH.
+
+Run `slate exp harvest $ARGUMENTS`. It checks each running experiment: exit
 code, whether every declared output exists, is non-empty and is newer than
 the start of the run. It prints one row each: `done`, `failed`, `lost` (the
 process died without writing an outcome, for instance across a reboot), or

@@ -9,7 +9,8 @@ allowed-tools: Bash(slate *), Bash(${CLAUDE_PLUGIN_ROOT}/bin/slate *)
 
 Request: $ARGUMENTS
 
-(Call `${CLAUDE_PLUGIN_ROOT}/bin/slate` if `slate` is not on the PATH.)
+`slate` below means `${CLAUDE_PLUGIN_ROOT}/bin/slate`: call it by that full path, since
+the plugin's `bin/` is not reliably on the PATH.
 
 **Showing the queue.** Run `slate decisions` (add `--arc <arc>` for one
 arc). Show the table as it is: blocking questions first, oldest first. For

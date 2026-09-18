@@ -9,7 +9,8 @@ allowed-tools: Bash(slate *), Bash(${CLAUDE_PLUGIN_ROOT}/bin/slate *)
 
 Scope: $ARGUMENTS (empty means every arc)
 
-(Call `${CLAUDE_PLUGIN_ROOT}/bin/slate` if `slate` is not on the PATH.)
+`slate` below means `${CLAUDE_PLUGIN_ROOT}/bin/slate`: call it by that full path, since
+the plugin's `bin/` is not reliably on the PATH.
 
 A findings file answers "what do we know, and how do we know it" for a set
 of experiments. Promotion turns one experiment into one durable note; a
