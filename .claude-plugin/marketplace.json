@@ -1,0 +1,15 @@
+{
+  "name": "slate",
+  "description": "The slate plugin, installable straight from its repository.",
+  "owner": {
+    "name": "Joachim Moeyens",
+    "url": "https://github.com/moeyensj"
+  },
+  "plugins": [
+    {
+      "name": "slate",
+      "source": "./",
+      "description": "Experiment records, session handoffs and an owner decision queue, kept inside your project's knowledge base."
+    }
+  ]
+}

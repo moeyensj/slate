@@ -1,0 +1,23 @@
+{
+  "name": "slate",
+  "displayName": "slate",
+  "version": "0.1.0",
+  "description": "Experiment records, session handoffs and an owner decision queue, kept inside your project's knowledge base.",
+  "author": {
+    "name": "Joachim Moeyens",
+    "url": "https://github.com/moeyensj"
+  },
+  "homepage": "https://github.com/moeyensj/slate",
+  "repository": "https://github.com/moeyensj/slate",
+  "license": "MIT",
+  "keywords": ["experiments", "handoff", "knowledge-base", "provenance", "beads"],
+  "userConfig": {
+    "tracker": {
+      "type": "string",
+      "title": "Issue tracker",
+      "description": "Where slate mirrors arcs, experiments and owner decisions. 'auto' uses beads (bd) when a project has a .beads directory and bd is installed. A knowledge base's slate.toml overrides this.",
+      "default": "auto",
+      "options": ["auto", "bd", "none"]
+    }
+  }
+}

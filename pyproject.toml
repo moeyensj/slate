@@ -1,0 +1,7 @@
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-include = ["bin/slate"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
