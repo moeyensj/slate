@@ -31,7 +31,12 @@ source. An adopted dataset cannot be rebuilt by slate, and the record says so.
 
 **Building a new dataset.**
 
-1. `slate data new <slug> --title "<title>"` prints the record path.
+1. `slate data new <slug> --title "<title>" --arc <arc> --repos <a,b>`
+   prints the record path. `--arc` names the arc the dataset is built for
+   and `--repos` the repositories the recipe depends on, worktrees included;
+   they decide what the build's snapshot covers, and without them the
+   dataset gets the knowledge base's default list. `--parent dataset:<id>`
+   for each dataset it derives from.
 2. Fill the plan sections before building:
    - **Purpose**: what it is for, and what it must not be used for.
    - **Sources**: each raw source with its URL or path, retrieval date and
@@ -55,3 +60,11 @@ Experiments then reference the dataset as `dataset:<slug>` in their
 
 A correction to a dataset record is made in place, dated, under Corrections.
 A change to the data is a new dataset with the old one as its parent.
+
+**When a dataset no longer matches its manifest** (a check or `slate data
+verify` says so, typically because the source moves, as a refreshed
+ephemeris or catalogue does), the record is right and the data changed. The
+one-line response is to adopt the current files as a child of the stale
+one: `slate data adopt <slug>-<date> --title "<title>" --parent dataset:<old> <paths>`,
+then point new experiments at the child. Offer exactly that; never edit the
+old manifest to match.

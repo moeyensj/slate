@@ -29,6 +29,10 @@ quests one reasonable-looking measurement at a time.
 
 ## 2. Plan, before anything runs
 
+Say this first, in one sentence, so the pause is expected: the plan must be
+committed before the run, so that the prediction is provably prior; under
+the `ask` policy there will be one question and the run starts on the yes.
+
 `slate exp new <arc> <slug> --title "<title>" --hypothesis "<one sentence>"`
 prints the record path. The one-sentence hypothesis is the claim under test;
 it is what a later summary of findings quotes, so it must read on its own.
@@ -37,9 +41,12 @@ Fill the plan sections of the README:
 - **Question**: one question.
 - **Hypothesis**: the claim, and why it is held.
 - **Prediction**: what will be observed if the hypothesis holds and if it
-  does not, with numbers, and who predicts it ("owner" or "Claude"). If the
-  user has not said what they expect and it cannot be inferred from the
-  conversation, ask once, together with the decision rule.
+  does not, with numbers, and who predicts it ("owner" or "Claude"). State
+  the expected sample size in the stratum that decides (rows, nights,
+  objects) and how it was estimated; a run whose deciding stratum turns out
+  ten times smaller than assumed has decided nothing. If the user has not
+  said what they expect and it cannot be inferred from the conversation,
+  ask once, together with the decision rule.
 - **Decision rule**: which result changes what happens next, and how. If no
   result would change anything, say that to the user before spending the
   compute.
@@ -65,6 +72,13 @@ Inputs are never copied into the record. The agent lists them in
 `inputs.txt` by path, and `slate` records their sizes and hashes. Say so if
 the user asks where the data went.
 
+A detached run ends silently: nothing tells this session that it finished.
+Tell the user so when the agent reports a detached start, with the log
+path. Then, on every later turn of this session, run
+`slate exp harvest <id>` before anything else; when it reports the run
+settled, go to step 4. A new session learns of a finished run from the
+session-start line and `/slate:harvest`.
+
 ## 4. Conclude
 
 When the agent reports, read the record's Result section and
@@ -72,7 +86,9 @@ When the agent reports, read the record's Result section and
 
 - Relay the reconstructability verdict. If it is `no`, give the reasons as
   they are printed (an unpushed commit, an unhashed dataset, a volatile
-  path) and what would fix each. Do not soften it.
+  path) and what would fix each. Do not soften it. Relay the plan-commit
+  line too: `plan committed as <sha>` is what makes the prediction prior;
+  `plan was not committed before the run` means the record cannot show it.
 - Write **Interpretation**: inference, labelled as inference, including
   what the result does not show. Compare against the prediction plainly; a
   refuted hypothesis and a null result are full results.
