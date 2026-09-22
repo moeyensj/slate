@@ -139,6 +139,59 @@ class TestDetach(RunBase):
         )
 
 
+class TestDirectoryOutput(RunBase):
+    def _status(self, rec):
+        return records.get_field(records.read(os.path.join(rec, "README.md")), "status")
+
+    def test_directory_output_verified_file_by_file(self):
+        kb = self.make_kb()
+        run_sh = (
+            "#!/bin/sh\nmkdir -p results/out/sub\n"
+            "echo a > results/out/a.txt\necho b > results/out/sub/b.txt\n"
+        )
+        cfg, eid, rec = self.build_exp(kb, run_sh, outputs="results/out\n")
+        runs.start(cfg, rec, detach=False)
+        self.assertEqual(self._status(rec), "done")
+        detail = _json(os.path.join(rec, "outcome.json"))["outputs"][0]
+        self.assertEqual(detail["output"], "results/out")
+        self.assertEqual(len(detail["files"]), 2)  # nested file included
+        self.assertTrue(all(f.get("abspath") for f in detail["files"]))
+        self.assertRegex(detail["tree_hash"], r"^[0-9a-f]{64}$")
+
+    def test_empty_directory_output_fails(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(
+            kb, "#!/bin/sh\nmkdir -p results/out\n", outputs="results/out\n"
+        )
+        runs.start(cfg, rec, detach=False)
+        self.assertEqual(self._status(rec), "failed")  # a directory output needs >=1 file
+
+    def test_empty_file_in_directory_output_fails(self):
+        kb = self.make_kb()
+        run_sh = (
+            "#!/bin/sh\nmkdir -p results/out\necho ok > results/out/a.txt\n: > results/out/e.txt\n"
+        )
+        cfg, eid, rec = self.build_exp(kb, run_sh, outputs="results/out\n")
+        runs.start(cfg, rec, detach=False)
+        self.assertEqual(self._status(rec), "failed")
+
+    def test_stale_file_in_directory_output_fails(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(
+            kb,
+            "#!/bin/sh\nmkdir -p results/out\necho fresh > results/out/new.txt\n",
+            outputs="results/out\n",
+        )
+        os.makedirs(os.path.join(rec, "results", "out"), exist_ok=True)
+        stale = os.path.join(rec, "results", "out", "old.txt")
+        with open(stale, "w") as fh:
+            fh.write("old\n")
+        old = time.time() - 3600
+        os.utime(stale, (old, old))
+        runs.start(cfg, rec, detach=False)
+        self.assertEqual(self._status(rec), "failed")
+
+
 class TestPlanCommit(RunBase):
     def test_sha_when_committed_null_when_modified(self):
         kb = self.make_kb()
@@ -166,6 +219,28 @@ class TestPlanCommit(RunBase):
         prov = _json(os.path.join(rec, "provenance.json"))
         self.assertIsNone(prov["plan_commit"])
         self.assertTrue(any("plan is not committed" in ln for ln in lines))
+
+    def test_frontmatter_and_harvest_line_when_committed(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(kb, "#!/bin/sh\necho data > results/out.txt\n")
+        self.git(kb, "init", "-b", "main")
+        self.git_commit(kb, "add", "-A")
+        self.git_commit(kb, "commit", "-m", "plan")
+        runs.start(cfg, rec, detach=False)
+        sha = records.get_field(records.read(os.path.join(rec, "README.md")), "plan_commit")
+        self.assertRegex(sha, r"^[0-9a-f]{40}$")
+        rows = runs.harvest(cfg, eid)  # a settled experiment carries the plan line
+        self.assertTrue(any(f"plan committed as {sha}" in r for r in rows), rows)
+
+    def test_frontmatter_empty_and_harvest_line_when_uncommitted(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(kb, "#!/bin/sh\necho data > results/out.txt\n")
+        runs.start(cfg, rec, detach=False)  # the KB is not committed
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "plan_commit"), ""
+        )
+        rows = runs.harvest(cfg, eid)
+        self.assertTrue(any("plan was not committed before the run" in r for r in rows), rows)
 
 
 class TestStartProvenance(RunBase):
@@ -236,3 +311,25 @@ class TestConclude(RunBase):
         with self.assertRaises(SystemExit) as cm:
             self.cli_run("exp", "conclude", eid, "--outcome", "confirmed", "--kb", kb)
         self.assertEqual(cm.exception.code, 2)
+
+    def test_cli_prints_uncommitted_plan_line(self):
+        kb = self.make_kb()
+        cfg, trk, eid, _ = self._done(kb)  # KB not committed => plan not committed
+        r = self.cli_run(
+            "exp", "conclude", eid, "--outcome", "confirmed", "--conclusion", "done.", "--kb", kb
+        )
+        self.assertEqual(r.code, 0, r.err)
+        self.assertIn("plan was not committed before the run", r.out)
+
+    def test_cli_prints_committed_plan_line(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(kb, "#!/bin/sh\necho data > results/out.txt\n")
+        self.git(kb, "init", "-b", "main")
+        self.git_commit(kb, "add", "-A")
+        self.git_commit(kb, "commit", "-m", "plan")
+        runs.start(cfg, rec, detach=False)
+        sha = records.get_field(records.read(os.path.join(rec, "README.md")), "plan_commit")
+        r = self.cli_run(
+            "exp", "conclude", eid, "--outcome", "confirmed", "--conclusion", "ok.", "--kb", kb
+        )
+        self.assertIn(f"plan committed as {sha}", r.out)

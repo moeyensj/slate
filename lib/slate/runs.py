@@ -10,6 +10,7 @@ own session so it outlives the caller; library code never sleeps in a loop.
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import shutil
@@ -301,22 +302,34 @@ def _compare_file(pa, pb, label):
 # --------------------------------------------------------------------------
 
 
+def _walk_files(base):
+    """Absolute paths of every regular file beneath ``base``, sorted walk, symlinks
+    not followed (neither symlinked directories nor symlinked files). The single
+    directory walker used for directory inputs, directory outputs and adoption."""
+    out = []
+    for root, dirs, names in os.walk(base):
+        dirs[:] = sorted(d for d in dirs if not os.path.islink(os.path.join(root, d)))
+        for name in sorted(names):
+            full = os.path.join(root, name)
+            if os.path.islink(full):
+                continue
+            out.append(full)
+    out.sort()
+    return out
+
+
 def _dir_tree(base):
     """Return (per-file list, tree hash) for a directory, stable under walk order."""
     files = []
-    for root, _dirs, names in os.walk(base):
-        for name in names:
-            full = os.path.join(root, name)
-            rel = os.path.relpath(full, base)
-            try:
-                sha = util.sha256_file(full)
-                size = os.path.getsize(full)
-            except OSError:
-                sha, size = None, None
-            files.append({"relpath": rel, "sha256": sha, "size": size})
+    for full in _walk_files(base):
+        rel = os.path.relpath(full, base)
+        try:
+            sha = util.sha256_file(full)
+            size = os.path.getsize(full)
+        except OSError:
+            sha, size = None, None
+        files.append({"relpath": rel, "sha256": sha, "size": size})
     files.sort(key=lambda f: f["relpath"])
-    import hashlib
-
     h = hashlib.sha256()
     for f in files:
         h.update("{}\0{}\n".format(f["relpath"], f["sha256"]).encode("utf-8"))
@@ -326,6 +339,40 @@ def _dir_tree(base):
 def _record_arc(record_dir):
     """The arc a record belongs to ('' for a dataset, which has none)."""
     return records.get_field(_safe_read(os.path.join(record_dir, "README.md")), "arc") or ""
+
+
+def record_repos(cfg, record_dir):
+    """The repositories a record's snapshot covers.
+
+    The record's own ``repos:`` if set, else its arc's ``repos:`` (via
+    ``cfg.arc_repos``), else the default ``[repos] include``. One resolver
+    passed to ``covered_repos``/``snapshot`` everywhere a record is snapshotted
+    or checked; experiments carry no ``repos:`` so they resolve to their arc's.
+    """
+    text = _safe_read(os.path.join(record_dir, "README.md"))
+    own = records.split_list(records.get_field(text, "repos"))
+    if own:
+        return own
+    arc = records.get_field(text, "arc") or ""
+    if arc:
+        arc_list = cfg.arc_repos(arc)
+        if arc_list:
+            return arc_list
+    return list(cfg.repos_include)
+
+
+def _repo_patch_name(entry):
+    """A safe file-name stem for a repos entry: '/' -> '__' (entries may be paths)."""
+    return entry.replace("/", "__")
+
+
+def _worktree_main_repo(path):
+    """Absolute git-common-dir of a linked worktree (its main repository), or None."""
+    r = gitstate.git(path, "rev-parse", "--git-common-dir")
+    common = r.stdout.strip()
+    if r.returncode != 0 or not common:
+        return None
+    return common if os.path.isabs(common) else os.path.abspath(os.path.join(path, common))
 
 
 def _recoverable_git(cfg, abspath):
@@ -553,19 +600,29 @@ def check(cfg, record_dir):
         if binary.get("error"):
             lines.append(f"configured binary not found: {binary['spec']}")
             reasons.append(f"configured binary not found: {binary['spec']}")
-    for name, path in cfg.covered_repos(_record_arc(record_dir)):
+    # Empty dirty/ of slate's own patches so the record holds exactly the
+    # patches of the repositories it covers now (a widened or narrowed repo set
+    # must not leave a stale patch the provenance does not reference).
+    _clear_patches(os.path.join(record_dir, "dirty"))
+    local_only = []
+    for name, path in cfg.covered_repos(repos=record_repos(cfg, record_dir)):
         # The knowledge base holds the record, not the code under test: its
         # push state is in the snapshot but does not decide reconstructability.
         if not cfg.is_kb_path(path) and not gitstate.pushed(path):
-            reasons.append(f"not pushed: {name}")
+            if name in cfg.repos_local_only:
+                lines.append(f"local-only by policy: {name}")
+                local_only.append(name)
+            else:
+                reasons.append(f"not pushed: {name}")
         ignore = cfg.kb_dirty_ignore() if cfg.is_kb_path(path) else None
         if gitstate.dirty_count(path, ignore) > 0:
-            dest = os.path.join(record_dir, "dirty", f"{name}.patch")
+            stem = _repo_patch_name(name)
+            dest = os.path.join(record_dir, "dirty", f"{stem}.patch")
             info = gitstate.write_patch(path, dest, 1024 * 1024, cfg.preserve_kb * 1024, ignore)
             count = gitstate.dirty_count(path, ignore)
             lines.append(
                 "dirty: {} ({} files) -> dirty/{}.patch [{}B, {} untracked embedded]".format(
-                    name, count, name, info["written"], info["embedded_untracked"]
+                    name, count, stem, info["written"], info["embedded_untracked"]
                 )
             )
             if info["over_cap"] or info["large_untracked"]:
@@ -588,6 +645,8 @@ def check(cfg, record_dir):
         if _is_uri(entry):
             continue
         target = _expand_out(record_dir, out_dir, entry)
+        if _names_directory(entry, target):
+            lines.append(f"directory output: {entry} (verified file by file at harvest)")
         if _under_volatile(target, record_dir, cfg.volatile):
             lines.append(f"volatile output: {entry}")
             reasons.append(f"volatile output: {entry}")
@@ -604,9 +663,31 @@ def check(cfg, record_dir):
     prov["inputs"] = prov_inputs
     prov["reconstructable"] = verdict
     prov["reconstructable_reasons"] = reasons
+    prov["local_only"] = local_only
     _write_provenance(record_dir, prov)
 
     return hard_ok, lines
+
+
+def _clear_patches(dirty_dir):
+    """Remove only the ``*.patch`` files slate wrote under ``dirty_dir``."""
+    try:
+        names = os.listdir(dirty_dir)
+    except OSError:
+        return
+    for name in names:
+        if name.endswith(".patch"):
+            try:
+                os.remove(os.path.join(dirty_dir, name))
+            except OSError:
+                pass
+
+
+def _names_directory(entry, target):
+    """True when a declared output entry resolves to a directory at check time."""
+    if _is_glob(entry):
+        return any(os.path.isdir(m) for m in glob.glob(target))
+    return os.path.isdir(target)
 
 
 # --------------------------------------------------------------------------
@@ -686,7 +767,7 @@ def start(cfg, record_dir, detach=False, repos_root=None):
         lines.append("check failed: not starting")
         return 1, lines
 
-    snap = gitstate.snapshot(cfg, _record_arc(record_dir))
+    snap = gitstate.snapshot(cfg, repos=record_repos(cfg, record_dir))
     rel = os.path.relpath(os.path.join(record_dir, "README.md"), cfg.root)
     plan = gitstate.plan_commit(cfg.root, rel)
     prov = _load_provenance(record_dir)  # inputs + verdict recorded by check
@@ -704,7 +785,12 @@ def start(cfg, record_dir, detach=False, repos_root=None):
 
     now = util.now_utc()
     readme = os.path.join(record_dir, "README.md")
-    records.apply_update(readme, {"status": "running", "started": util.iso(now)})
+    # `plan_commit` is visible in the record's own frontmatter, not just in
+    # provenance.json: it is what makes a pre-registered prediction credible.
+    records.apply_update(
+        readme,
+        {"status": "running", "started": util.iso(now), "plan_commit": plan or ""},
+    )
 
     start_epoch = now.timestamp()
 
@@ -814,31 +900,62 @@ def verify_outputs(record_dir, out_dir, start_epoch, cap_bytes):
         matches = sorted(glob.glob(target))
         detail = {"output": entry, "missing": not matches, "files": []}
         ok = bool(matches)
-        for full in matches:
-            try:
-                st = os.stat(full)
-            except OSError:
-                ok = False
-                continue
-            empty = st.st_size == 0
-            stale = st.st_mtime <= start_epoch
-            if empty or stale:
-                ok = False
-            detail["files"].append(
-                {
-                    "path": os.path.relpath(full, record_dir),
-                    "abspath": os.path.abspath(full),
-                    "size": st.st_size,
-                    "empty": empty,
-                    "stale": stale,
-                    "sha256": None if empty else _sha256(full, cap_bytes),
-                }
-            )
+        tree_hash = None
+        for m in matches:
+            if os.path.isdir(m):
+                # A directory output stands for every file beneath it; each file
+                # is verified by the same rules, and at least one is required.
+                dir_files, tree_hash = _dir_tree(m)
+                if not dir_files:
+                    ok = False
+                for df in dir_files:
+                    full = os.path.join(m, df["relpath"])
+                    ok = (
+                        _append_output_file(
+                            detail, record_dir, full, start_epoch, cap_bytes, df["sha256"]
+                        )
+                        and ok
+                    )
+            else:
+                ok = _append_output_file(detail, record_dir, m, start_epoch, cap_bytes, None) and ok
+        if tree_hash is not None:
+            detail["tree_hash"] = tree_hash
         detail["ok"] = ok
         if not ok:
             all_ok = False
         results.append(detail)
     return results, all_ok
+
+
+def _append_output_file(detail, record_dir, full, start_epoch, cap_bytes, precomputed_sha):
+    """Verify one output file and append it to ``detail['files']``. Returns its ok.
+
+    ``precomputed_sha`` is the hash already taken by the directory walk (which
+    hashes uncapped, as directory inputs do); a lone file is hashed under the cap.
+    """
+    try:
+        st = os.stat(full)
+    except OSError:
+        return False
+    empty = st.st_size == 0
+    stale = st.st_mtime <= start_epoch
+    if empty:
+        sha = None
+    elif precomputed_sha is not None:
+        sha = precomputed_sha
+    else:
+        sha = _sha256(full, cap_bytes)
+    detail["files"].append(
+        {
+            "path": os.path.relpath(full, record_dir),
+            "abspath": os.path.abspath(full),
+            "size": st.st_size,
+            "empty": empty,
+            "stale": stale,
+            "sha256": sha,
+        }
+    )
+    return not (empty or stale)
 
 
 def _recheck_inputs(cfg, prov):
@@ -932,9 +1049,13 @@ def _harvest_one(cfg, eid, record_dir):
             updates["rebuildable"] = datasets.rebuildable(cfg, eid)
         records.apply_update(readme, updates)
         extra = f"  inputs_mutated={len(mutated)}" if mutated else ""
-        return "{}  {}  exit={}  wall={}s{}".format(
+        row = "{}  {}  exit={}  wall={}s{}".format(
             eid, status, outcome.get("exit_code"), outcome.get("wall_seconds"), extra
         )
+        # Per settled experiment, surface whether the plan was pre-registered.
+        if kind == "experiment":
+            row += "\n" + _plan_commit_line(record_dir)
+        return row
 
     if not _pid_alive(run_json.get("pid")):
         records.apply_update(readme, {"status": "lost"})
@@ -952,6 +1073,16 @@ def _read_json(path):
             return json.load(fh)
     except (OSError, ValueError):
         return None
+
+
+def _plan_commit_line(record_dir):
+    """The one-line plan-registration note shown at harvest and conclude."""
+    prov = _load_provenance(record_dir)
+    if "plan_commit" in prov:
+        plan = prov.get("plan_commit")
+    else:
+        plan = records.get_field(_safe_read(os.path.join(record_dir, "README.md")), "plan_commit")
+    return f"plan committed as {plan}" if plan else "plan was not committed before the run"
 
 
 # --------------------------------------------------------------------------
@@ -1116,6 +1247,8 @@ def _file_state(cfg, record_dir, role, spec, prov_inputs, outcome, verify, out_d
         if not matches:
             return "missing", 0
         return "present", sum(_safe_size(m) for m in matches)
+    if role == "output" and os.path.isdir(path):
+        return _dir_output_state(path, outcome, spec, verify)
     if not os.path.exists(path):
         return "missing", None
     size = _safe_size(path)
@@ -1143,6 +1276,22 @@ def _safe_size(path):
         return os.path.getsize(path)
     except OSError:
         return None
+
+
+def _dir_output_state(path, outcome, spec, verify):
+    """State/size for a directory output: over its files, changed only under --verify."""
+    files = _walk_files(path)
+    if not files:
+        return "missing", 0
+    total = sum(_safe_size(f) or 0 for f in files)
+    if verify:
+        rec_tree = None
+        for d in outcome.get("outputs", []):
+            if d.get("output") == spec:
+                rec_tree = d.get("tree_hash")
+        if rec_tree is not None and _dir_tree(path)[1] != rec_tree:
+            return "changed", total
+    return "present", total
 
 
 def files_view(cfg, given=None, arc=None, verify=False):
@@ -1398,7 +1547,15 @@ def _plan_output(cfg, index, record_id, record_dir, out_dir, spec, outcome, item
             return
     else:
         matches = [target]
-    for full in matches:
+    # A directory output stands for the files beneath it (recorded per file in
+    # outcome.json); expand it so each file is considered under its own hash.
+    expanded = []
+    for m in matches:
+        if os.path.isdir(m):
+            expanded.extend(_walk_files(m))
+        else:
+            expanded.append(m)
+    for full in expanded:
         items.append(
             _consider_file(
                 cfg, index, record_id, full, "output", recorded.get(os.path.realpath(full))
@@ -1664,7 +1821,7 @@ def _reconstruct(cfg, record_dir, prov, tmp):
     lines = []
     ok = True
     repos = prov.get("repos", {})
-    for name, path in cfg.covered_repos(_record_arc(record_dir)):
+    for name, path in cfg.covered_repos(repos=record_repos(cfg, record_dir)):
         if cfg.is_kb_path(path):
             continue  # the KB holds the record, not the code under test
         rec = repos.get(name)
@@ -1673,17 +1830,27 @@ def _reconstruct(cfg, record_dir, prov, tmp):
             ok = False
             continue
         sha = rec["head"]
+        # The tree goes where run.sh's $SLATE_REPOS_ROOT/<entry> resolves: at
+        # <tmp>/<entry>, slashes and all, with the leading directories created.
         dest = os.path.join(tmp, name)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
         clone = gitstate.clone_shared(os.path.abspath(path), dest)
         if clone.returncode != 0:
-            lines.append(f"reconstruct: clone failed for {name}")
-            ok = False
-            continue
+            # A linked worktree may not clone directly on older git; fall back to
+            # its main repository (the shared object store holds the recorded sha).
+            main_repo = _worktree_main_repo(path)
+            if main_repo:
+                clone = gitstate.clone_shared(main_repo, dest)
+            if clone.returncode != 0:
+                lines.append(f"reconstruct: clone failed for {name}")
+                ok = False
+                continue
+            lines.append(f"reconstruct: {name} cloned from its main repository (linked worktree)")
         if gitstate.git(dest, "checkout", "--detach", sha).returncode != 0:
             lines.append(f"reconstruct: checkout {sha[:12]} failed for {name}")
             ok = False
             continue
-        patch = os.path.join(record_dir, "dirty", f"{name}.patch")
+        patch = os.path.join(record_dir, "dirty", f"{_repo_patch_name(name)}.patch")
         if os.path.isfile(patch):
             if gitstate.git(dest, "apply", os.path.abspath(patch)).returncode != 0:
                 lines.append(f"reconstruct: dirty patch failed to apply for {name}")
@@ -1719,6 +1886,7 @@ def _build_rerun_readme(orig_text, new_id, arc, date, orig_id):
             "promoted_to": "",
             "measures": "",
             "marked": "",
+            "plan_commit": "",
             "cleaned": "",
             "tracker": "",
             "rerun_of": orig_id,

@@ -3,7 +3,9 @@ slate: dataset
 id: {{id}}
 title: {{title}}
 status: planned
-parents:
+arc: {{arc}}
+repos: {{repos}}
+parents: {{parents}}
 rebuildable:
 created: {{date}}
 started:

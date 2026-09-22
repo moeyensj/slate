@@ -33,10 +33,13 @@ readme_tree = true         # promote annotates the README directory tree
 
 [repos]
 root = ".."                # relative to the KB root
-include = ["*"]            # the default for arcs that name no repositories:
+include = ["*"]            # the default for records that name no repositories:
                            # "*" = every git working tree directly under root
                            # (bare repositories are skipped), or a list of
-                           # names. The knowledge base is always covered.
+                           # entries. The knowledge base is always covered.
+local_only = []            # entries whose commits are kept off any remote by
+                           # policy: an unpushed HEAD there is noted, not held
+                           # against the verdict
 
 [provenance]
 tools = ["python3 --version"]   # each command's first output line is recorded
@@ -102,7 +105,7 @@ done) and `<!-- slate:after ... -->` (after a run).
     README.md                    slate: experiment  (plan, then result)
     run.sh                       the exact command, re-runnable
     inputs.txt                   declared inputs, by reference: one path, directory or URI per line
-    outputs.txt                  declared outputs, one path, glob or URI per line
+    outputs.txt                  declared outputs, one path, directory, glob or URI per line
     preserved/                   small inputs that git could not recover (see Inputs)
     dirty/                       per repository: uncommitted changes as a patch
     provenance.json              written by `exp start`
@@ -171,9 +174,11 @@ tracker calls, no git calls.
 
 `slate arc new <slug> --title T --directive TEXT [--by NAME] [--epic ID] [--repos A,B]`
 creates the arc folder from `templates/arc.md` and `templates/rulings.md`.
-`--repos` names the repositories this arc's runs depend on (linked worktrees
-are entries of their own); it is stored as `repos:` in the arc's README and
-can be edited there. Snapshots, handoffs, pickups and reruns for the arc
+`--repos` names the repositories this arc's runs depend on; it is stored as
+`repos:` in the arc's README and can be edited there. An entry is a path
+relative to `repos.root`, so a linked worktree such as
+`.claude/worktrees/x` is an entry of its own; in file names (the dirty
+patch, a rerun's tree) the slashes of an entry become `__`. Snapshots, handoffs, pickups and reruns for the arc
 cover those repositories plus the knowledge base; an arc that names none
 gets `[repos] include`. Questions about a file rather than an arc (does git
 track it, can git recover it) look at every repository any arc names.
@@ -193,7 +198,10 @@ arcs table). Nothing outside the markers changes.
 ### Snapshot
 
 `slate snapshot` reports, for each covered repository: name, branch, HEAD
-sha, dirty file count, commits ahead of and behind upstream (blank when
+sha, dirty file count (untracked files counted one by one; an untracked
+nested repository, such as a linked worktree kept under the working tree,
+is not dirt and never enters a patch: it is covered on its own when a
+record names it), commits ahead of and behind upstream (blank when
 there is no upstream), and `pushed`: whether HEAD is contained in a
 remote-tracking branch (no network access; `no` when there is no remote).
 Then host, user, UTC time, hardware (CPU model, core count, memory, OS), the
@@ -241,7 +249,15 @@ verdict.
 `preserve_kb` (as a no-index diff, so the patch recreates it); larger
 untracked files are listed with size and sha256 and count against the
 verdict. The patch is capped at 1 MB; over the cap it is not written and
-counts against the verdict.
+counts against the verdict. Each check empties `dirty/` first, so the
+record holds exactly the patches of the repositories it covers now.
+
+**Directory outputs.** An `outputs.txt` line that names a directory stands
+for every file beneath it (walked in sorted order, symbolic links not
+followed). Each file is verified by the same rules as a declared file, the
+directory must hold at least one file, and `outcome.json` lists every file
+with its size and sha256 plus a tree hash over the sorted `relpath` and
+`sha256` pairs, as directory inputs do.
 
 **Arm parity.** When inputs carry `a:` and `b:` prefixes, files are paired
 by basename, then by order. The table lists every file present in one arm
@@ -253,7 +269,10 @@ account for every row; the command only prints them.
 reason per line, printed and written to `provenance.json` (the check writes
 the inputs and the verdict; `exp start` adds the snapshot to the same file).
 Reasons: a covered repository's HEAD is not pushed (the knowledge base
-itself is exempt: it holds the record, not the code under test); a
+itself is exempt: it holds the record, not the code under test; a repository
+listed in `repos.local_only` is noted as `local-only by policy: <name>`
+instead, and the names so noted are kept in `provenance.json` under
+`local_only`); a
 `provenance.binaries` entry that does not exist;
 uncommitted changes that were not fully preserved; an input with no hash
 that is neither recoverable from git nor preserved; an input or output
@@ -271,7 +290,8 @@ sets `status: running` and `started:`, records the sha256 of `run.sh` and
 the working directory, and runs `run.sh` from the record directory with
 stdout and stderr to `log.txt`. A supervisor process in its
 own session outlives the caller, waits for `run.sh`, and writes
-`outcome.json` (`exit_code`, `finished`, `wall_seconds`). Without `--detach`
+`outcome.json` (`exit_code`, `finished`, `wall_seconds`). `plan_commit` is
+also written to the record's frontmatter. Without `--detach`
 the command waits and then harvests; with it, it returns at once and prints
 the pid and the log path.
 
@@ -295,7 +315,14 @@ recorded size and mtime (rehashing when they differ) and list any that
 changed under `inputs_mutated`, which adds a reason to the verdict, and set
 `status` to `done` (exit 0 and every output verified) or `failed`; if there is no outcome and the pid is dead,
 set `status: lost`; otherwise report it as running with elapsed time and the
-last three log lines. Prints one row per experiment.
+last three log lines. Prints one row per experiment, and for each settled
+one a second line `plan committed as <sha>` or `plan was not committed
+before the run`. `slate exp conclude` prints the same line.
+
+A detached run ends silently: no process tells a session that it finished.
+`slate status` counts finished, unharvested runs, so the session-start hook
+reports them; within a session, the caller runs `slate exp harvest` on a
+later turn.
 
 `slate exp conclude <id> --outcome confirmed|refuted|null|inconclusive --conclusion TEXT`
 requires `status: done` or `failed` and no remaining `slate:after` marker.
@@ -429,15 +456,26 @@ dataset's files, and check, start and harvest behave as they do for
 experiments. Statuses: `planned`, `running`, `built`, `failed`, `lost`,
 `retired`.
 
-`slate data new <slug> --title T` creates the record from
-`templates/dataset.md`. `slate data check|start|harvest <id>` are the
+`slate data new <slug> --title T [--arc ARC] [--repos A,B] [--parent ID]...`
+creates the record from `templates/dataset.md`. `--arc` records the arc the
+dataset is built for (`arc:` in the frontmatter) and `--repos` the
+repositories the recipe depends on (`repos:`); a dataset's snapshot covers
+its own `repos:`, else its arc's, else the default, like an experiment.
+`--parent`, repeatable, names a dataset it derives from (`parents:`); an
+unknown parent is refused.
+`slate data check|start|harvest <id>` are the
 experiment commands applied to a dataset record; a harvest that verifies
 every output writes `MANIFEST.json` (every file: path, size, sha256; a tree
 hash over all of them) and sets `status: built`.
 
-`slate data adopt <slug> --title T PATH...` registers a dataset that
-already exists: it hashes the files into `MANIFEST.json` and sets
-`status: built` with no recipe. An adopted dataset is `rebuildable: no`.
+`slate data adopt <slug> --title T [--parent ID]... PATH...` registers a
+dataset that already exists: it hashes the files into `MANIFEST.json` and
+sets `status: built` with no recipe. A PATH that is a directory stands for
+every file beneath it. Nothing is written until every file has been hashed,
+so a failure leaves no half-made record. An adopted dataset is
+`rebuildable: no`. `--parent` names the dataset it replaces or was cut from,
+which is how a refreshed copy of a moving source is recorded: adopt it again
+as a child of the stale one.
 
 `rebuildable:` is computed, never typed: `yes` when the record has a recipe,
 its verdict is `reconstructable: yes`, and every `dataset:` parent is itself

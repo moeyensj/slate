@@ -7,7 +7,7 @@ import os
 import re
 
 from harness import Base
-from slate import datasets, records, runs
+from slate import arcs, datasets, gitstate, records, runs, tracker
 
 
 def _strip(path):
@@ -54,6 +54,23 @@ class TestBuild(DataBase):
         self.assertEqual(
             records.get_field(records.read(os.path.join(rec, "README.md")), "rebuildable"), "yes"
         )
+
+    def test_directory_output_build_lists_every_file_in_manifest(self):
+        kb = self.make_kb()
+        run_sh = (
+            "#!/bin/sh\nmkdir -p results/out/sub\n"
+            "echo a > results/out/a.txt\necho b > results/out/sub/b.txt\n"
+        )
+        cfg, dsid, rec = self.build_and_run(
+            kb, slug="dirbuild", run_sh=run_sh, outputs="results/out\n"
+        )
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "built"
+        )
+        man = datasets.read_manifest(rec)
+        self.assertEqual(len(man["files"]), 2)  # the directory expanded into its files
+        self.assertTrue(all(re.match(r"^[0-9a-f]{64}$", f["sha256"]) for f in man["files"]))
+        self.assertTrue(all(os.path.isabs(f["path"]) for f in man["files"]))
 
 
 class TestAdopt(DataBase):
@@ -217,3 +234,135 @@ class TestDataCliRoundtrip(DataBase):
         r = self.cli_run("data", "list", "--kb", kb, "--json")
         self.assertEqual(r.code, 0)
         self.assertIn("dataset:viacli", r.out)
+
+
+class TestAdoptDirectory(DataBase):
+    def _tree(self):
+        src = os.path.join(self.tmp, "srcdir")
+        os.makedirs(os.path.join(src, "nested"))
+        with open(os.path.join(src, "a.txt"), "w") as fh:
+            fh.write("aaa")
+        with open(os.path.join(src, "nested", "b.txt"), "w") as fh:
+            fh.write("bbbb")
+        return src
+
+    def test_directory_expands_to_every_file_and_skips_outside_symlink(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        src = self._tree()
+        outside = os.path.join(self.tmp, "outside.txt")
+        with open(outside, "w") as fh:
+            fh.write("MUST NOT BE HASHED")
+        os.symlink(outside, os.path.join(src, "link.txt"))  # points outside the tree
+        dsid, rec = datasets.adopt(cfg, "dir", "Directory set", [src])
+        man = datasets.read_manifest(rec)
+        rels = sorted(os.path.relpath(f["path"], src) for f in man["files"])
+        self.assertEqual(rels, ["a.txt", os.path.join("nested", "b.txt")])  # nested in, link out
+        self.assertTrue(all(re.match(r"^[0-9a-f]{64}$", f["sha256"]) for f in man["files"]))
+        self.assertRegex(man["tree_hash"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "built"
+        )
+        self.assertEqual(datasets.rebuildable(cfg, dsid), "no")
+
+    def test_missing_path_leaves_no_record_and_retry_succeeds(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        with self.assertRaises(records.IdError):
+            datasets.adopt(cfg, "d", "T", [os.path.join(self.tmp, "nope.txt")])
+        self.assertFalse(os.path.exists(cfg.dataset_dir("d")))  # nothing half-made
+        real = os.path.join(self.tmp, "real.txt")
+        with open(real, "w") as fh:
+            fh.write("ok")
+        dsid, rec = datasets.adopt(cfg, "d", "T", [real])  # retry: no "already exists"
+        self.assertTrue(os.path.isdir(rec))
+
+    def test_unreadable_file_in_directory_leaves_no_record(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        src = self._tree()
+        bad = os.path.join(src, "a.txt")
+        os.chmod(bad, 0)
+        self.addCleanup(os.chmod, bad, 0o644)
+        with self.assertRaises(OSError):
+            datasets.adopt(cfg, "d", "T", [src])
+        self.assertFalse(os.path.exists(cfg.dataset_dir("d")))
+
+
+class TestParents(DataBase):
+    def _parent(self, cfg, slug="parent"):
+        raw = os.path.join(self.tmp, slug + ".txt")
+        with open(raw, "w") as fh:
+            fh.write(slug)
+        return datasets.adopt(cfg, slug, "Parent", [raw])[0]
+
+    def test_adopt_parent_stored_and_unknown_refused(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        self._parent(cfg)
+        child_src = os.path.join(self.tmp, "child.txt")
+        with open(child_src, "w") as fh:
+            fh.write("c")
+        _id, rec = datasets.adopt(cfg, "child", "Child", [child_src], parents=["parent"])
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "parents"),
+            "dataset:parent",
+        )
+        with self.assertRaises(records.IdError):
+            datasets.adopt(cfg, "orphan", "O", [child_src], parents=["nope"])
+        self.assertFalse(os.path.exists(cfg.dataset_dir("orphan")))
+
+    def test_new_parent_stored_and_unknown_refused(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        self._parent(cfg)
+        _id, rec = datasets.new(cfg, "d", "T", parents=["parent"])
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "parents"),
+            "dataset:parent",
+        )
+        with self.assertRaises(records.IdError):
+            datasets.new(cfg, "d2", "T2", parents=["missing"])
+        self.assertFalse(os.path.exists(cfg.dataset_dir("d2")))
+
+
+class TestDatasetRepos(DataBase):
+    def _workspace(self):
+        kb = self.make_kb()
+        self.git_init(kb)  # the KB is always covered when it is a repo
+        for name in ("alpha", "beta", "gamma"):
+            self.git_init(os.path.join(self.tmp, name))
+        return kb
+
+    def test_own_repos_arc_repos_and_default_fallback(self):
+        kb = self._workspace()
+        cfg = self.cfg(kb)
+        arcs.new(cfg, tracker.build(cfg), "myarc", "Arc", "Do it.", repos=["beta"])
+        _id, own = datasets.new(cfg, "own", "T", repos=["gamma"])
+        _id, viaarc = datasets.new(cfg, "viaarc", "T", arc="myarc")
+        _id, plain = datasets.new(cfg, "plain", "T")
+        # Own repos: wins; else the arc's; else the default include.
+        self.assertEqual(runs.record_repos(cfg, own), ["gamma"])
+        self.assertEqual(runs.record_repos(cfg, viaarc), ["beta"])
+        self.assertEqual(runs.record_repos(cfg, plain), list(cfg.repos_include))
+        # The arc-inheriting dataset snapshots beta + the KB, not everything.
+        snap = gitstate.snapshot(cfg, repos=runs.record_repos(cfg, viaarc))
+        self.assertEqual(list(snap["repos"]), ["beta", cfg.name])
+        # Neither set falls back to the default (all working trees), not a narrow set.
+        covered = [n for n, _ in cfg.covered_repos(repos=runs.record_repos(cfg, plain))]
+        self.assertEqual(sorted(covered), sorted(["alpha", "beta", "gamma", cfg.name]))
+
+    def test_all_covered_repos_includes_dataset_only_repo(self):
+        kb = self.make_kb()
+        # include names only alpha; a dataset names beta of its own.
+        p = os.path.join(kb, "slate.toml")
+        with open(p) as fh:
+            toml = fh.read().replace('root = ".."\n', 'root = ".."\ninclude = ["alpha"]\n')
+        with open(p, "w") as fh:
+            fh.write(toml)
+        for name in ("alpha", "beta"):
+            self.git_init(os.path.join(self.tmp, name))
+        cfg = self.cfg(kb)
+        datasets.new(cfg, "d", "T", repos=["beta"])
+        self.assertNotIn("beta", [n for n, _ in cfg.covered_repos()])
+        self.assertIn("beta", [n for n, _ in cfg.all_covered_repos()])

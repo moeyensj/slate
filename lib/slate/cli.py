@@ -340,6 +340,8 @@ def cmd_exp_harvest(args, cfg, trk):
 def cmd_exp_conclude(args, cfg, trk):
     eid, err = runs.conclude(cfg, trk, args.id, args.outcome, args.conclusion)
     _out(f"{eid} concluded: {args.outcome}")
+    _eid, record_dir = scan.find_experiment(cfg, eid)
+    _out(runs._plan_commit_line(record_dir))
     if err:
         _out(f"tracker error: {err}")
     return 0
@@ -535,13 +537,16 @@ def cmd_sweep(args, cfg, trk):
 
 
 def cmd_data_new(args, cfg, trk):
-    _dsid, record_dir = datasets.new(cfg, args.slug, args.title)
+    repos = [r.strip() for r in (args.repos or "").split(",") if r.strip()] or None
+    _dsid, record_dir = datasets.new(
+        cfg, args.slug, args.title, arc=args.arc, repos=repos, parents=args.parent
+    )
     _out(record_dir)
     return 0
 
 
 def cmd_data_adopt(args, cfg, trk):
-    _dsid, record_dir = datasets.adopt(cfg, args.slug, args.title, args.paths)
+    _dsid, record_dir = datasets.adopt(cfg, args.slug, args.title, args.paths, parents=args.parent)
     _out(record_dir)
     return 0
 
@@ -846,10 +851,18 @@ def build_parser():
     dn = data_sub.add_parser("new", parents=[common])
     dn.add_argument("slug")
     dn.add_argument("--title", required=True)
+    dn.add_argument("--arc", help="the arc this dataset is built for")
+    dn.add_argument("--repos", help="comma-separated repositories the recipe depends on")
+    dn.add_argument(
+        "--parent", action="append", metavar="ID", help="a dataset it derives from (repeatable)"
+    )
     dn.set_defaults(func=cmd_data_new)
     da = data_sub.add_parser("adopt", parents=[common])
     da.add_argument("slug")
     da.add_argument("--title", required=True)
+    da.add_argument(
+        "--parent", action="append", metavar="ID", help="a dataset it replaces (repeatable)"
+    )
     da.add_argument("paths", nargs="+")
     da.set_defaults(func=cmd_data_adopt)
     dc = data_sub.add_parser("check", parents=[common])
@@ -936,7 +949,11 @@ def main(argv=None):
         sys.stderr.write("no knowledge base found; run 'slate init'\n")
         return 2
 
-    cfg = config.load(root)
+    try:
+        cfg = config.load(root)
+    except config.ConfigError as exc:
+        sys.stderr.write(f"cannot read slate.toml: {exc}\n")
+        return 2
     trk = tracker.build(cfg)
 
     try:

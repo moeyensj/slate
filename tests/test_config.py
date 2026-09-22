@@ -104,3 +104,24 @@ class TestTrackerResolution(Base):
         kb = self.make_kb(tracker="auto", tracker_dir=".")
         os.makedirs(os.path.join(kb, ".beads"))
         self.assertEqual(self.cfg(kb).tracker_kind(), "bd")
+
+
+class TestMalformedToml(Base):
+    def test_bad_toml_is_a_one_line_usage_error(self):
+        kb = self.make_kb()
+        with open(os.path.join(kb, "slate.toml"), "a") as fh:
+            fh.write("\n[repos]\nlocal_only = []\n")  # a second [repos] table: invalid TOML
+        r = self.cli_run("where", cwd=kb)
+        self.assertEqual(r.code, 2)
+        self.assertIn("cannot read slate.toml", r.err)
+        self.assertNotIn("Traceback", r.err)
+
+    def test_mini_reader_refuses_what_tomllib_refuses(self):
+        from slate import config
+
+        for bad in ("[a]\nx = 1\n[a]\ny = 2\n", "[a]\nx = 1\nx = 2\n", "[a]\njust words\n"):
+            with self.assertRaises(ValueError):
+                config.mini_toml(bad)
+        self.assertEqual(
+            config.mini_toml("[a]\nx = 1\n[b]\nx = 2\n"), {"a": {"x": 1}, "b": {"x": 2}}
+        )
