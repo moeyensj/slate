@@ -18,7 +18,11 @@ The `slate` command is at `<SLATE_BIN>`.
    working directory. Everything the run does must be in this file,
    including any build: a step done by hand is a step nobody can repeat.
    Refer to code only as `"$SLATE_REPOS_ROOT/<repo>/..."` and write large
-   outputs only under `"$SLATE_OUT"`. Never write the absolute path of a
+   outputs only under `"$SLATE_OUT"`. Pin what the run loads: if the code
+   refreshes any data file at start-up (ephemerides, catalogues, caches),
+   set whatever makes it use the local copies (an offline flag or
+   environment variable), so a run cannot change its own inputs. A run
+   that does will fail harvest with `inputs_mutated`, correctly. Never write the absolute path of a
    repository into `run.sh`: a later rerun points `SLATE_REPOS_ROOT` at a
    reconstruction of the recorded commits, and a hard-coded path would
    silently run today's code instead.
@@ -37,10 +41,13 @@ The `slate` command is at `<SLATE_BIN>`.
    that Method does not account for, and every reason behind a
    `reconstructable: no` verdict.
 6. `slate exp start <EXP_ID>` (add `--detach` when Detach is yes).
-   Without `--detach`, start it as a single background command and wait for
-   its completion notice. Never poll, never sleep in a loop, never tail the
-   log while it runs.
-7. Detached: stop here and report the pid and the log path.
+   Without `--detach`: if your shell tool can run a command in the
+   background and notify you when it exits, start it that way and wait for
+   that notice; otherwise run it in the foreground with a timeout longer
+   than the run. Never poll, never sleep in a loop, never tail the log while
+   it runs.
+7. Detached: stop here and report the pid and the log path. Nothing will
+   notify anyone when the run ends; say so in the report.
    Otherwise: read `outcome.json`. If the status is `failed` or `lost`,
    report the exit code and the last 20 log lines; do not retry with
    different settings, because that would be a different experiment.

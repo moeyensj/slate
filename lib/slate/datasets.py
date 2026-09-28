@@ -240,16 +240,38 @@ def parents(cfg, dataset_id, _seen=None):
 # --------------------------------------------------------------------------
 
 
-def new(cfg, slug, title):
-    """Create a planned dataset record from the template. Returns (id, dir)."""
+def _resolve_parents(cfg, parents):
+    """Resolve each ``--parent`` to its canonical id, raising if one is unknown."""
+    resolved = []
+    for pid in parents or []:
+        did, _dir = find(cfg, pid)
+        resolved.append(did)
+    return resolved
+
+
+def new(cfg, slug, title, arc=None, repos=None, parents=None):
+    """Create a planned dataset record from the template. Returns (id, dir).
+
+    ``arc``/``repos`` record which repositories the recipe depends on (its own
+    ``repos:`` else its arc's), and ``parents`` the datasets it derives from.
+    """
     record_dir = cfg.dataset_dir(slug)
     if os.path.exists(record_dir):
         raise records.IdError(f"dataset already exists: {slug}")
+    parent_ids = _resolve_parents(cfg, parents)  # validated before anything is written
     os.makedirs(os.path.join(record_dir, "results"), exist_ok=True)
     dsid = PREFIX + slug
     body = util.render(
         util.load_template("dataset.md"),
-        {"id": dsid, "title": title, "date": util.today_str(), "tracker": ""},
+        {
+            "id": dsid,
+            "title": title,
+            "date": util.today_str(),
+            "tracker": "",
+            "arc": arc or "",
+            "repos": ",".join(repos) if repos else "",
+            "parents": ", ".join(parent_ids),
+        },
     )
     records.write(os.path.join(record_dir, "README.md"), body)
     run_sh = os.path.join(record_dir, "run.sh")
@@ -260,20 +282,49 @@ def new(cfg, slug, title):
     return dsid, record_dir
 
 
-def adopt(cfg, slug, title, paths):
-    """Register an existing dataset: hash the files, mark it built, no recipe."""
-    dsid, record_dir = new(cfg, slug, title)
+def _adopt_files(cfg, paths):
+    """Hash every file the PATHs name into manifest rows, raising on any failure.
+
+    A PATH that is a directory stands for every file beneath it (sorted walk,
+    symlinks not followed, via the one directory walker). Nothing is hashed
+    lazily: this returns only once every file has a hash, so the caller can
+    write the record knowing no failure will leave it half-made.
+    """
     cap = cfg.max_hash_mb * 1024 * 1024
     files = []
-    resolved = []
     for p in paths:
         ap = os.path.abspath(p)
-        resolved.append(ap)
-        st = os.stat(ap)
-        sha = util.sha256_file(ap) if st.st_size <= cap else None
-        files.append({"path": ap, "size": st.st_size, "sha256": sha})
+        if not os.path.exists(ap):
+            raise records.IdError(f"adopt: path does not exist: {p}")
+        if os.path.isdir(ap):
+            tree, _hash = runs._dir_tree(ap)
+            for f in tree:
+                full = os.path.join(ap, f["relpath"])
+                if f["sha256"] is None:  # the walk hashes uncapped; None means unreadable
+                    raise OSError(f"adopt: cannot read file: {full}")
+                files.append({"path": full, "size": f["size"], "sha256": f["sha256"]})
+        else:
+            st = os.stat(ap)
+            sha = util.sha256_file(ap) if st.st_size <= cap else None
+            files.append({"path": ap, "size": st.st_size, "sha256": sha})
+    return files
+
+
+def adopt(cfg, slug, title, paths, parents=None):
+    """Register an existing dataset: hash the files, mark it built, no recipe.
+
+    Every file is hashed before the record is created, so a failure (an
+    unreadable file, a missing path) leaves nothing behind and a retry does not
+    report "already exists". A PATH that is a directory adopts every file below it.
+    """
+    if os.path.exists(cfg.dataset_dir(slug)):
+        raise records.IdError(f"dataset already exists: {slug}")
+    parent_ids = _resolve_parents(cfg, parents)  # validated before any hashing
+    resolved = [os.path.abspath(p) for p in paths]
+    files = _adopt_files(cfg, paths)
+    dsid, record_dir = new(cfg, slug, title, parents=parent_ids)
     write_manifest(record_dir, files)
-    # Record the adopted files as outputs so the files view and sweep see them.
+    # Record the adopted paths as outputs so the files view and sweep see them.
     records.write(os.path.join(record_dir, "outputs.txt"), "".join(p + "\n" for p in resolved))
     records.write(os.path.join(record_dir, "inputs.txt"), "none\n")
     records.apply_update(

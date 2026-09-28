@@ -25,8 +25,10 @@ Show the table. Then, for each experiment that settled:
    with units and measurement context, the controls' results, paths to the
    outputs. Open the log only for a `failed` or `lost` run, and only its
    tail.
-2. Relay what harvest reported about reproducibility: inputs that changed
-   while the run was going, and the verdict with its reasons, as printed.
+2. Relay what harvest reported about reproducibility: the plan-commit line
+   (`plan committed as <sha>`, or that it was not committed before the run),
+   inputs that changed while the run was going, and the verdict with its
+   reasons, as printed.
 3. Write **Interpretation** with the user: inference labelled as inference,
    compared plainly against the prediction in the plan. Then **Conclusion**:
    what was established, in sentences that stand alone. Do not edit the plan.

@@ -91,8 +91,10 @@ concluded with an outcome: `confirmed`, `refuted`, `null` or
 `inconclusive`. A null result is a full result.
 
 Runs outlive sessions. A detached run is supervised by a process in its own
-session that records the exit code when the run ends. Nothing polls. A later
-`harvest`, or the next `pickup`, verifies the outputs and settles the record.
+session that records the exit code when the run ends. Nothing polls, and
+nothing notifies: a finished run is found by the session-start line, by a
+`harvest` on a later turn, or by the next `pickup`, which verify the outputs
+and settle the record.
 
 A handoff is `open`, then `picked-up`, then `closed`. A note is written
 once. The next note for the same arc supersedes it and closes it, so an arc

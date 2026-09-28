@@ -6,7 +6,7 @@ import json
 import os
 
 from harness import Base
-from slate import arcs, decisions, handoffs, index, records, runs, tracker
+from slate import arcs, decisions, handoffs, index, records, runs, tracker, util
 
 
 class TestIndex(Base):
@@ -33,7 +33,7 @@ class TestIndex(Base):
         self.assertEqual(prefix_before, prefix_after)
         self.assertEqual(suffix_before, suffix_after)
         self.assertIn("### Experiments", after)
-        self.assertIn("2026-09-18-x", after)
+        self.assertIn(f"{util.today_str()}-x", after)  # the record is dated today
 
     def test_arcs_table_rebuilt(self):
         kb = self.make_kb()

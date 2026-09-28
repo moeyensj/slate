@@ -113,7 +113,7 @@ works without Claude too: `slate handoffs`, `slate decisions`,
 
 ```
 <knowledge-base>/<arcs>/<arc>/
-  README.md        your directive, the state, a generated index
+  README.md        your directive, the repositories, the state, an index
   rulings.md       open questions and your rulings, verbatim
   handoffs/        one note per session end
   experiments/     one folder per experiment

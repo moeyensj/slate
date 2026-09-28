@@ -6,7 +6,7 @@ import json
 import os
 
 from harness import Base
-from slate import runs
+from slate import records, runs
 
 
 def scaffold(
@@ -132,6 +132,71 @@ class TestCheckSoft(Base):
         _ok, lines = runs.check(self.cfg(kb), rec)
         vol = [ln for ln in lines if ln.startswith("volatile output")]
         self.assertEqual(vol, ["volatile output: /slate-volatile-test/volatile_out"])
+
+
+class TestStalePatchCleared(Base):
+    def test_narrower_repo_set_removes_the_stale_patch(self):
+        kb = self.make_kb()
+        for name in ("repoA", "repoB"):
+            repo = os.path.join(self.tmp, name)
+            self.git_init(repo)
+            with open(os.path.join(repo, "seed.txt"), "a") as fh:
+                fh.write("dirty\n")  # dirty so each writes a patch
+        rec = os.path.join(kb, "arcs", "a", "experiments", "2026-09-18-x")
+        scaffold(rec)
+        cfg = self.cfg(kb)
+        runs.check(cfg, rec)  # default include: both repos covered
+        self.assertTrue(os.path.isfile(os.path.join(rec, "dirty", "repoA.patch")))
+        self.assertTrue(os.path.isfile(os.path.join(rec, "dirty", "repoB.patch")))
+        # Narrow the record's repos:; the re-check must drop the now-uncovered patch.
+        records.apply_update(os.path.join(rec, "README.md"), {"repos": "repoA"})
+        runs.check(cfg, rec)
+        self.assertTrue(os.path.isfile(os.path.join(rec, "dirty", "repoA.patch")))
+        self.assertFalse(os.path.exists(os.path.join(rec, "dirty", "repoB.patch")))
+
+    def test_only_patch_files_are_cleared(self):
+        kb = self.make_kb()
+        rec = os.path.join(kb, "arcs", "a", "experiments", "2026-09-18-x")
+        scaffold(rec)
+        os.makedirs(os.path.join(rec, "dirty"))
+        keep = os.path.join(rec, "dirty", "notes.txt")  # not a slate patch
+        with open(keep, "w") as fh:
+            fh.write("keep me\n")
+        runs.check(self.cfg(kb), rec)
+        self.assertTrue(os.path.isfile(keep))
+
+
+class TestCheckDirectoryOutput(Base):
+    def test_check_reports_a_directory_output(self):
+        kb = self.make_kb()
+        rec = os.path.join(kb, "arcs", "a", "experiments", "2026-09-18-x")
+        scaffold(rec, outputs="results/out\n")
+        os.makedirs(os.path.join(rec, "results", "out"))
+        with open(os.path.join(rec, "results", "out", "f.txt"), "w") as fh:
+            fh.write("x")
+        ok, lines = runs.check(self.cfg(kb), rec)
+        self.assertTrue(ok, lines)
+        self.assertIn("directory output: results/out (verified file by file at harvest)", lines)
+
+
+class TestLocalOnly(Base):
+    def test_local_only_note_replaces_not_pushed_reason(self):
+        kb = self.make_kb()
+        p = os.path.join(kb, "slate.toml")
+        with open(p) as fh:
+            toml = fh.read().replace('root = ".."\n', 'root = ".."\nlocal_only = ["repoLocal"]\n')
+        with open(p, "w") as fh:
+            fh.write(toml)
+        for name in ("repoLocal", "repoOther"):
+            self.git_init(os.path.join(self.tmp, name))  # neither has a remote
+        rec = os.path.join(kb, "arcs", "a", "experiments", "2026-09-18-x")
+        scaffold(rec)
+        ok, lines = runs.check(self.cfg(kb), rec)
+        self.assertIn("local-only by policy: repoLocal", lines)
+        prov = json.loads(open(os.path.join(rec, "provenance.json")).read())
+        self.assertIn("repoLocal", prov.get("local_only", []))
+        self.assertNotIn("not pushed: repoLocal", prov["reconstructable_reasons"])
+        self.assertIn("not pushed: repoOther", prov["reconstructable_reasons"])
 
 
 class TestArmParity(Base):

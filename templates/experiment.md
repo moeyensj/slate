@@ -14,6 +14,7 @@ finished:
 outcome:
 promoted_to:
 marked:
+plan_commit:
 cleaned:
 tracker: {{tracker}}
 ---
@@ -30,7 +31,7 @@ tracker: {{tracker}}
 
 ## Prediction
 
-<!-- slate:fill what you will observe if the hypothesis holds, and if it does not, with numbers -->
+<!-- slate:fill what you will observe if the hypothesis holds, and if it does not, with numbers; the expected sample size in the stratum that decides, and how it was estimated -->
 
 ## Decision rule
 

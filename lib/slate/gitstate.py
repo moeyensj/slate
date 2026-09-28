@@ -69,15 +69,20 @@ def _porcelain_path(line: str) -> str:
 
 
 def dirty_count(repo: str, ignore_prefixes=None) -> int:
-    """Count uncommitted entries; paths under ``ignore_prefixes`` are skipped."""
-    r = git(repo, "status", "--porcelain")
-    lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
-    if not ignore_prefixes:
-        return len(lines)
+    """Count uncommitted files; paths under ``ignore_prefixes`` are skipped.
+
+    Untracked files are listed one by one, so an untracked nested repository
+    (a linked worktree kept under the working tree, say) shows as a single
+    entry ending in ``/`` and is not counted: it is a repository of its own,
+    covered on its own if a record names it, and no patch can recreate it.
+    """
+    r = git(repo, "status", "--porcelain", "--untracked-files=all")
     count = 0
-    for ln in lines:
+    for ln in r.stdout.splitlines():
+        if not ln.strip():
+            continue
         path = _porcelain_path(ln)
-        if any(path.startswith(p) for p in ignore_prefixes):
+        if path.endswith("/") or any(path.startswith(p) for p in ignore_prefixes or []):
             continue
         count += 1
     return count
@@ -159,14 +164,18 @@ def subjects(repo: str, a: str, b: str, cap: int):
     return (lines[:cap], len(lines))
 
 
-def snapshot(cfg, arc=None) -> dict:
-    """Build the snapshot recorded in provenance and handoff state blocks."""
-    repos = OrderedDict()
+def snapshot(cfg, arc=None, repos=None) -> dict:
+    """Build the snapshot recorded in provenance and handoff state blocks.
+
+    ``repos`` is an explicit covered-repository list (a record's own resolved
+    set); it wins over ``arc`` and the default, mirroring ``covered_repos``.
+    """
+    repos_snap = OrderedDict()
     kb_ignore = cfg.kb_dirty_ignore()
-    for name, path in cfg.covered_repos(arc):
+    for name, path in cfg.covered_repos(arc, repos):
         ahead, behind = ahead_behind(path)
         ignore = kb_ignore if cfg.is_kb_path(path) else None
-        repos[name] = {
+        repos_snap[name] = {
             "path": os.path.abspath(path),
             "branch": branch(path),
             "head": head(path),
@@ -179,7 +188,7 @@ def snapshot(cfg, arc=None) -> dict:
     for cmd in cfg.provenance_tools:
         tools.append({"cmd": cmd, "line": _tool_line(cmd, cfg.repos_root_dir)})
     return {
-        "repos": repos,
+        "repos": repos_snap,
         "host": util.host(),
         "user": util.user(),
         "time": util.now_ts(),
@@ -276,8 +285,8 @@ def write_patch(
     embedded = 0
     others = git(repo, "ls-files", "--others", "--exclude-standard", "-z").stdout
     for rel in [x for x in others.split("\0") if x]:
-        if any(rel.startswith(p) for p in ignore):
-            continue
+        if rel.endswith("/") or any(rel.startswith(p) for p in ignore):
+            continue  # a nested repository is not a file to preserve
         full = os.path.join(repo, rel)
         try:
             size = os.path.getsize(full)

@@ -135,24 +135,35 @@ def _strip_comment(line: str) -> str:
 
 
 def mini_toml(text: str) -> dict:
-    """Parse the small TOML subset that slate.toml uses."""
+    """Parse the small TOML subset that slate.toml uses.
+
+    It refuses what tomllib refuses (a table or key declared twice, a line
+    that is neither), so a file reads the same on every Python version.
+    """
     result: dict = {}
     table = result
-    for raw_line in text.splitlines():
+    seen_tables = set()
+    for lineno, raw_line in enumerate(text.splitlines(), 1):
         line = _strip_comment(raw_line).strip()
         if not line:
             continue
         if line.startswith("[") and line.endswith("]"):
             name = line[1:-1].strip()
+            if name in seen_tables:
+                raise ValueError(f"line {lineno}: table [{name}] declared twice")
+            seen_tables.add(name)
             table = result
             for part in name.split("."):
                 part = part.strip()
                 table = table.setdefault(part, {})
             continue
         if "=" not in line:
-            continue
+            raise ValueError(f"line {lineno}: expected 'key = value', got {line!r}")
         key, _, value = line.partition("=")
-        table[key.strip()] = _parse_scalar(value)
+        key = key.strip()
+        if key in table:
+            raise ValueError(f"line {lineno}: key {key!r} declared twice")
+        table[key] = _parse_scalar(value)
     return result
 
 
@@ -197,6 +208,7 @@ class Config:
 
         self.repos_root = repos.get("root", "..")
         self.repos_include = repos.get("include", ["*"])
+        self.repos_local_only = repos.get("local_only", [])
 
         self.provenance_tools = prov.get("tools", [])
         self.provenance_env = prov.get("env", [])
@@ -307,32 +319,44 @@ class Config:
         return [n.strip() for n in value.split(",") if n.strip()]
 
     def all_covered_repos(self):
-        """Every repository any arc or the default covers: for questions about
-        a file ("does git track this?") that must not depend on the arc asked."""
-        from . import scan
+        """Every repository any arc, dataset or the default covers: for questions
+        about a file ("does git track this?") that must not depend on the arc asked."""
+        from . import runs, scan
 
         pairs = list(self.covered_repos())
         seen = {os.path.abspath(p) for _, p in pairs}
-        for arc, _dir in scan.arc_dirs(self):
-            for name, path in self.covered_repos(arc):
-                if os.path.abspath(path) not in seen:
-                    seen.add(os.path.abspath(path))
+
+        def _add(more):
+            for name, path in more:
+                ap = os.path.abspath(path)
+                if ap not in seen:
+                    seen.add(ap)
                     pairs.append((name, path))
+
+        for arc, _dir in scan.arc_dirs(self):
+            _add(self.covered_repos(arc))
+        # Datasets may name repositories of their own (arc: or repos:) that no
+        # arc covers; a file question must see those too.
+        for _did, ddir in scan.dataset_dirs(self):
+            _add(self.covered_repos(repos=runs.record_repos(self, ddir)))
         return pairs
 
-    def covered_repos(self, arc=None):
+    def covered_repos(self, arc=None, repos=None):
         """Return an ordered list of (name, path) covered by a snapshot.
 
-        An arc that names its own repositories is snapshotted with those; any
-        other arc gets `[repos] include`. The knowledge base is always covered:
-        it holds the plan commit and is what a pickup compares first.
+        An explicit ``repos`` list wins; otherwise an arc that names its own
+        repositories is snapshotted with those and any other arc gets
+        `[repos] include`. An entry is a path relative to `repos.root`, so a
+        linked worktree such as `.claude/worktrees/x` is a valid entry. The
+        knowledge base is always covered: it holds the plan commit and is what
+        a pickup compares first.
         """
         from . import gitstate
 
         root = self.repos_root_dir
         pairs = []
         seen = set()
-        include = (self.arc_repos(arc) if arc else []) or self.repos_include
+        include = repos or (self.arc_repos(arc) if arc else []) or self.repos_include
         if include == ["*"] or include == "*":
             names = []
             try:
@@ -364,8 +388,17 @@ class Config:
         return pairs
 
 
+class ConfigError(Exception):
+    """slate.toml could not be read."""
+
+
 def load(root: str) -> Config:
     """Load the config from a resolved knowledge-base root."""
     path = os.path.join(root, SLATE_TOML)
-    data = load_toml(path) if os.path.isfile(path) else {}
+    if not os.path.isfile(path):
+        return Config(root, {})
+    try:
+        data = load_toml(path)
+    except (ValueError, OSError) as exc:  # tomllib's error is a ValueError
+        raise ConfigError(f"{path}: {exc}") from exc
     return Config(root, data)
