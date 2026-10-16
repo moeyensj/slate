@@ -94,17 +94,35 @@ def write_manifest_from_outputs(record_dir, results):
 
 
 def verify(cfg, record_dir):
-    """Rehash every manifest file. Returns (ok, differences, count, bytes)."""
+    """Hold every manifest file to its record. Returns (ok, differences, count, bytes).
+
+    A file is held to its size, and to its hash when the manifest holds one,
+    whatever ``max_hash_mb`` is now; one recorded without a hash is held to
+    its size only, so it is never a difference by hash.
+    """
     man = read_manifest(record_dir)
     if not man:
         return False, ["no manifest"], 0, 0
-    cap = cfg.max_hash_mb * 1024 * 1024
     diffs = []
     total = 0
     files = man.get("files", [])
     for f in files:
-        path = f["path"]
         total += f.get("size") or 0
+        diff = runs._file_differs(f["path"], f.get("size"), f.get("sha256"))
+        if diff:
+            diffs.append(f"{diff}: {f['path']}")
+    return (not diffs), diffs, len(files), total
+
+
+def matches_via_cache(cfg, record_dir, cache):
+    """The same match through the hash cache: a size check, then the recorded
+    hash, read once per size and mtime and whatever ``max_hash_mb`` is now."""
+    man = read_manifest(record_dir)
+    if not man:
+        return False, ["no manifest"]
+    diffs = []
+    for f in man.get("files", []):
+        path = f["path"]
         try:
             st = os.stat(path)
         except OSError:
@@ -115,29 +133,8 @@ def verify(cfg, record_dir):
             continue
         rec = f.get("sha256")
         if rec is None:
-            continue  # recorded without a hash: cannot verify, so never a difference
-        cur = util.sha256_file(path) if st.st_size <= cap else None
-        if cur != rec:
-            diffs.append(f"hash changed: {path}")
-    return (not diffs), diffs, len(files), total
-
-
-def matches_via_cache(cfg, record_dir, cache):
-    """Cheap match against the manifest using the hash cache (size/mtime, rehash on miss)."""
-    man = read_manifest(record_dir)
-    if not man:
-        return False, ["no manifest"]
-    cap = cfg.max_hash_mb * 1024 * 1024
-    diffs = []
-    for f in man.get("files", []):
-        path = f["path"]
-        if not os.path.exists(path):
-            diffs.append(f"missing: {path}")
-            continue
-        rec = f.get("sha256")
-        if rec is None:
-            continue
-        cur, _unhashed = cache.sha256(path, cap)
+            continue  # recorded without a hash: held to its size only
+        cur, _unhashed = cache.sha256(path, None)
         if cur != rec:
             diffs.append(f"hash changed: {path}")
     return (not diffs), diffs
@@ -286,27 +283,31 @@ def _adopt_files(cfg, paths):
     """Hash every file the PATHs name into manifest rows, raising on any failure.
 
     A PATH that is a directory stands for every file beneath it (sorted walk,
-    symlinks not followed, via the one directory walker). Nothing is hashed
-    lazily: this returns only once every file has a hash, so the caller can
-    write the record knowing no failure will leave it half-made.
+    symlinks not followed, via the one directory walker), each hashed whatever
+    its size; a lone file over ``max_hash_mb`` is sized only. Nothing is hashed
+    lazily: this returns only once every file has been read, so the caller can
+    write the record knowing no failure will leave it half-made. The hashes go
+    into the cache, so a later check of the dataset reads nothing again.
     """
     cap = cfg.max_hash_mb * 1024 * 1024
+    cache = runs.HashCache(cfg)
     files = []
     for p in paths:
         ap = os.path.abspath(p)
         if not os.path.exists(ap):
             raise records.IdError(f"adopt: path does not exist: {p}")
         if os.path.isdir(ap):
-            tree, _hash = runs._dir_tree(ap)
+            tree, _hash = runs._dir_tree(ap, cache)
             for f in tree:
                 full = os.path.join(ap, f["relpath"])
-                if f["sha256"] is None:  # the walk hashes uncapped; None means unreadable
+                if f["sha256"] is None:  # the walk hashes every file; None means unreadable
                     raise OSError(f"adopt: cannot read file: {full}")
                 files.append({"path": full, "size": f["size"], "sha256": f["sha256"]})
         else:
             st = os.stat(ap)
-            sha = util.sha256_file(ap) if st.st_size <= cap else None
+            sha, _unhashed = cache.sha256(ap, cap)
             files.append({"path": ap, "size": st.st_size, "sha256": sha})
+    cache.save()
     return files
 
 

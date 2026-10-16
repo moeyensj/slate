@@ -181,6 +181,54 @@ class TestUriInput(RerunBase):
         self.assertEqual(code2, 0, "\n".join(lines2))
 
 
+class TestInputsChanged(RerunBase):
+    def test_directory_input_held_to_its_recorded_files(self):
+        kb = self.make_kb()
+        d = os.path.join(self.tmp, "bundle")
+        os.makedirs(d)
+        for name in ("a.txt", "b.txt"):
+            with open(os.path.join(d, name), "w") as fh:
+                fh.write(name + " body")
+        cfg, eid, rec = self.run_exp(
+            kb, "#!/bin/sh\necho fixed > results/out.txt\n", inputs=d + "\n"
+        )
+        prov = runs._load_provenance(rec)
+        self.assertEqual(runs._inputs_changed(cfg, prov), [])
+        low = self.cfg(kb)
+        low.max_hash_mb = 0  # the record's hashes decide, not the cap of the day
+        self.assertEqual(runs._inputs_changed(low, prov), [])
+        a = os.path.join(d, "a.txt")
+        with open(a, "w") as fh:
+            fh.write("A.txt body")  # same length
+        self.assertEqual(runs._inputs_changed(cfg, prov), [d])
+        with open(a, "w") as fh:
+            fh.write("a.txt body")
+        extra = os.path.join(d, "c.txt")
+        with open(extra, "w") as fh:
+            fh.write("added later")
+        self.assertEqual(runs._inputs_changed(cfg, prov), [d])
+        os.remove(extra)
+        self.assertEqual(runs._inputs_changed(cfg, prov), [])
+        os.remove(os.path.join(d, "b.txt"))
+        self.assertEqual(runs._inputs_changed(cfg, prov), [d])
+
+    def test_file_input_hash_checked_whatever_the_cap_is_now(self):
+        kb = self.make_kb()
+        data = os.path.join(self.tmp, "data.txt")
+        with open(data, "w") as fh:
+            fh.write("v0\n")
+        cfg, eid, rec = self.run_exp(
+            kb, "#!/bin/sh\necho fixed > results/out.txt\n", inputs=data + "\n"
+        )
+        prov = runs._load_provenance(rec)
+        low = self.cfg(kb)
+        low.max_hash_mb = 0
+        self.assertEqual(runs._inputs_changed(low, prov), [])  # untouched: no refusal
+        with open(data, "w") as fh:
+            fh.write("v1\n")  # same length
+        self.assertEqual(runs._inputs_changed(low, prov), [data])
+
+
 class TestTreeIsolationAndTemp(RerunBase):
     def _dirty_repo_exp(self, kb):
         repo = os.path.join(self.tmp, "repoA")

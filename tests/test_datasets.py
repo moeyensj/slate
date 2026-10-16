@@ -298,6 +298,67 @@ class TestAdoptDirectory(DataBase):
         self.assertFalse(os.path.exists(cfg.dataset_dir("d")))
 
 
+class TestHashCap(DataBase):
+    """The walk hashes every file; verification holds a file to what its record says."""
+
+    def test_directory_adopted_under_a_low_cap_verifies(self):
+        # Issue #4: the walk hashed every file while verify applied the cap, so
+        # a file over max_hash_mb was reported as 'hash changed' untouched.
+        kb = self.make_kb(extra_toml="\n[experiment]\nmax_hash_mb = 0\n")
+        cfg = self.cfg(kb)
+        src = TestAdoptDirectory._tree(self)
+        dsid, rec = datasets.adopt(cfg, "big", "Big", [src])
+        man = datasets.read_manifest(rec)
+        self.assertTrue(all(re.match(r"^[0-9a-f]{64}$", f["sha256"]) for f in man["files"]))
+        ok, diffs, n, _b = datasets.verify(cfg, rec)
+        self.assertTrue(ok, diffs)
+        self.assertEqual(n, 2)
+        r = self.cli_run("data", "verify", "big", "--kb", kb)
+        self.assertEqual(r.code, 0, r.out)
+        ok2, diffs2 = datasets.matches_via_cache(cfg, rec, runs.HashCache(cfg))
+        self.assertTrue(ok2, diffs2)
+        # Same length, different bytes: the recorded hash still catches it.
+        a = os.path.join(src, "a.txt")
+        with open(a, "w") as fh:
+            fh.write("aab")
+        _ok, diffs, _n, _b = datasets.verify(cfg, rec)
+        self.assertEqual(diffs, [f"hash changed: {a}"])
+        _ok, diffs3 = datasets.matches_via_cache(cfg, rec, runs.HashCache(cfg))
+        self.assertEqual(diffs3, diffs)
+
+    def test_lone_file_over_the_cap_is_held_to_its_size(self):
+        kb = self.make_kb(extra_toml="\n[experiment]\nmax_hash_mb = 0\n")
+        cfg = self.cfg(kb)
+        raw = os.path.join(self.tmp, "raw.bin")
+        with open(raw, "w") as fh:
+            fh.write("payload")
+        _id, rec = datasets.adopt(cfg, "lone", "Lone", [raw])
+        self.assertIsNone(datasets.read_manifest(rec)["files"][0]["sha256"])  # sized only
+        self.assertTrue(datasets.verify(cfg, rec)[0])
+        with open(raw, "w") as fh:
+            fh.write("PAYLOAD")  # same size: nothing recorded can tell
+        self.assertTrue(datasets.verify(cfg, rec)[0])
+        with open(raw, "w") as fh:
+            fh.write("longer payload")
+        _ok, diffs, _n, _b = datasets.verify(cfg, rec)
+        self.assertEqual(diffs, [f"size changed: {raw}"])
+
+    def test_adoption_warms_the_cache_the_input_check_reads(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        src = TestAdoptDirectory._tree(self)
+        datasets.adopt(cfg, "src", "Source", [src])
+        # Unreadable now: a check that had to hash again would fail here.
+        for name in ("a.txt", os.path.join("nested", "b.txt")):
+            os.chmod(os.path.join(src, name), 0)
+            self.addCleanup(os.chmod, os.path.join(src, name), 0o644)
+        cfg, eid, rec = TestDatasetInput._exp_with_dataset(self, kb, "dataset:src\n")
+        ok, _lines = runs.check(cfg, rec)
+        self.assertTrue(ok)
+        entry = [e for e in runs._load_provenance(rec)["inputs"] if e["kind"] == "dataset"][0]
+        self.assertTrue(entry["matches"])
+
+
 class TestParents(DataBase):
     def _parent(self, cfg, slug="parent"):
         raw = os.path.join(self.tmp, slug + ".txt")

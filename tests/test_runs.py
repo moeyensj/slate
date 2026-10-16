@@ -316,6 +316,40 @@ class TestInputMutation(RunBase):
         self.assertEqual(outcome["inputs_mutated"], [])
 
 
+class TestRecheckInputs(RunBase):
+    def _prov_for(self, kb, data):
+        cfg, eid, rec = self.build_exp(
+            kb, "#!/bin/sh\necho out > results/out.txt\n", inputs=data + "\n"
+        )
+        runs.check(cfg, rec)
+        return runs._load_provenance(rec)
+
+    def test_touched_input_with_the_same_bytes_is_not_mutated(self):
+        kb = self.make_kb()
+        data = os.path.join(self.tmp, "data.txt")
+        with open(data, "w") as fh:
+            fh.write("v0\n")
+        prov = self._prov_for(kb, data)
+        old = time.time() - 3600
+        os.utime(data, (old, old))  # the mtime moved; the hash says the bytes did not
+        self.assertEqual(runs._recheck_inputs(prov), [])
+        with open(data, "w") as fh:
+            fh.write("v1\n")  # same length, different bytes
+        self.assertEqual(runs._recheck_inputs(prov), [data])
+
+    def test_unhashed_input_counts_as_mutated_once_its_mtime_moves(self):
+        kb = self.make_kb(extra_toml="\n[experiment]\npreserve_kb = 0\nmax_hash_mb = 0\n")
+        data = os.path.join(self.tmp, "data.txt")
+        with open(data, "w") as fh:
+            fh.write("v0\n")
+        prov = self._prov_for(kb, data)
+        self.assertIsNone(prov["inputs"][0]["sha256"])
+        self.assertEqual(runs._recheck_inputs(prov), [])
+        old = time.time() - 3600
+        os.utime(data, (old, old))  # nothing recorded can show the bytes are the same
+        self.assertEqual(runs._recheck_inputs(prov), [data])
+
+
 class TestConclude(RunBase):
     def _done(self, kb):
         cfg, eid, rec = self.build_exp(kb, "#!/bin/sh\necho data > results/out.txt\n")

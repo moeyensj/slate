@@ -464,6 +464,57 @@ class TestVerdict(InputsBase):
         self.assertIn(f"volatile input: {vol}", reasons)
 
 
+class TestHashCache(InputsBase):
+    def test_cap_is_the_callers_even_on_a_hit(self):
+        kb, _rec = self.prep()
+        cfg = self.cfg(kb)
+        f = os.path.join(self.tmp, "big.bin")
+        with open(f, "w") as fh:
+            fh.write("0123456789")
+        cache = runs.HashCache(cfg)
+        self.assertEqual(cache.sha256(f, 0), (None, True))  # capped: sized only
+        sha, unhashed = cache.sha256(f, None)  # no cap: hashed after all
+        self.assertRegex(sha, r"^[0-9a-f]{64}$")
+        self.assertFalse(unhashed)
+        self.assertEqual(cache.sha256(f, 0), (None, True))  # a capped caller still sees none
+        self.assertEqual(cache.sha256(f, 1024), (sha, False))  # under the cap: the cached hash
+
+    def test_verdict_does_not_depend_on_what_the_cache_has_seen(self):
+        kb, rec = self.prep(extra_toml="\n[experiment]\npreserve_kb = 0\nmax_hash_mb = 0\n")
+        cfg = self.cfg(kb)
+        f = os.path.join(self.tmp, "big.bin")
+        with open(f, "w") as fh:
+            fh.write("0123456789")
+        warm = runs.HashCache(cfg)
+        warm.sha256(f, None)  # a dataset check hashed it in full
+        warm.save()
+        self.set_inputs(rec, f)
+        runs.check(cfg, rec)
+        entry = self.by_input(rec)[f]
+        self.assertTrue(entry["unhashed"])
+        self.assertIsNone(entry["sha256"])
+        self.assertIn(f"input not reproducible: {f}", self.prov(rec)["reconstructable_reasons"])
+
+    def test_directory_input_is_hashed_through_the_cache(self):
+        kb, rec = self.prep()
+        cfg = self.cfg(kb)
+        d = os.path.join(self.tmp, "adir")
+        os.makedirs(d)
+        for name in ("one.txt", "two.txt"):
+            with open(os.path.join(d, name), "w") as fh:
+                fh.write(name)
+        self.set_inputs(rec, d)
+        runs.check(cfg, rec)
+        first = self.by_input(rec)[d]
+        self.assertTrue(all(f["sha256"] for f in first["files"]))
+        for name in ("one.txt", "two.txt"):  # a re-read would raise; a cache hit must not read
+            os.chmod(os.path.join(d, name), 0)
+            self.addCleanup(os.chmod, os.path.join(d, name), 0o644)
+        ok, _ = runs.check(cfg, rec)
+        self.assertTrue(ok)
+        self.assertEqual(self.by_input(rec)[d], first)
+
+
 class TestPreserveIdempotent(Base):
     def test_same_content_is_preserved_once_and_different_content_gets_a_suffix(self):
         import tempfile

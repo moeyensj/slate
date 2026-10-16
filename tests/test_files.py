@@ -68,6 +68,45 @@ class TestFilesStates(FilesBase):
         self.assertEqual(groups[0]["output_total"]["files"], 2)
 
 
+class TestVerify(FilesBase):
+    def _output_state(self, cfg, eid):
+        rows = runs.files_view(cfg, given=eid, verify=True)[0]["rows"]
+        return [r for r in rows if r["role"] == "output"][0]["state"]
+
+    def test_directory_output_held_to_what_harvest_recorded(self):
+        kb = self.make_kb()
+        run_sh = (
+            "#!/bin/sh\nmkdir -p results/out\n"
+            "echo aaa > results/out/a.txt\necho bbb > results/out/b.txt\n"
+        )
+        cfg, eid, rec = self.build(kb, run_sh, "none\n", "results/out\n")
+        runs.start(cfg, rec, detach=False)
+        self.assertEqual(self._output_state(cfg, eid), "present")
+        a = os.path.join(rec, "results", "out", "a.txt")
+        with open(a, "w") as fh:
+            fh.write("aab\n")  # same length: only the hash can tell
+        self.assertEqual(self._output_state(cfg, eid), "changed")
+        with open(a, "w") as fh:
+            fh.write("aaa\n")
+        self.assertEqual(self._output_state(cfg, eid), "present")
+        with open(os.path.join(rec, "results", "out", "c.txt"), "w") as fh:
+            fh.write("new\n")  # a file harvest never saw
+        self.assertEqual(self._output_state(cfg, eid), "changed")
+
+    def test_recorded_hash_is_checked_whatever_the_cap_is_now(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build(
+            kb, "#!/bin/sh\necho o > results/out.txt\n", "none\n", "results/out.txt\n"
+        )
+        runs.start(cfg, rec, detach=False)  # hashed under the default cap
+        low = self.cfg(kb)
+        low.max_hash_mb = 0  # a cap lowered after the run must not read as a change
+        self.assertEqual(self._output_state(low, eid), "present")
+        with open(os.path.join(rec, "results", "out.txt"), "w") as fh:
+            fh.write("O\n")  # same length
+        self.assertEqual(self._output_state(low, eid), "changed")
+
+
 class TestMark(FilesBase):
     def _exp(self, kb, slug="x"):
         return self.build(
