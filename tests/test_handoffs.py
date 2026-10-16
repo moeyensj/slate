@@ -117,6 +117,55 @@ class TestTrackerSection(HandoffBase):
         self.assertIn("bd-prog1", text)
 
 
+class TestIssueIds(HandoffBase):
+    def test_generated_lines_yield_their_id_whatever_its_shape(self):
+        section = (
+            "## Tracker\n\n"
+            "- thor-rust-68kz [open] Fix the thing\n"
+            "- thor-rust-4bls.3 [in_progress] A child issue\n"
+            "- bd-open1 [open] a long-term pre-registration fix\n"
+            "- my_proj-ab12 [open] an underscore in the prefix\n"
+            "- THOR-9f3k [open] capitals in the prefix\n"
+        )
+        ids = handoffs._issue_ids(section)
+        self.assertEqual(
+            ids, ["THOR-9f3k", "bd-open1", "my_proj-ab12", "thor-rust-4bls.3", "thor-rust-68kz"]
+        )
+        self.assertNotIn("thor-rust", ids)  # the prefix alone is not an issue
+        self.assertNotIn("pre-registration", ids)  # a title is not searched
+
+    def test_hand_written_lines_are_searched_for_hyphenated_ids(self):
+        section = "## Tracker\n\nsee thor-rust-68kz and thor-rust-4bls.3, then bd-open1\n"
+        self.assertEqual(
+            handoffs._issue_ids(section), ["bd-open1", "thor-rust-4bls.3", "thor-rust-68kz"]
+        )
+
+    def test_pickup_reports_closed_hyphenated_ids(self):
+        self.install_fake_bd()
+        kb = self.make_kb(tracker="auto", tracker_dir=".")
+        os.makedirs(os.path.join(kb, ".beads"))
+        cfg = self.cfg(kb)
+        trk = tracker.build(cfg)
+        arcs.new(cfg, trk, "arc", "Arc title", "Do the thing.")
+        hid, path = handoffs.new(cfg, trk, "arc")
+        text = records.read(path)
+        # Stand in for a tracker whose prefix carries a hyphen.
+        generated = handoffs._section(text, "Tracker")
+        records.write(
+            path,
+            text.replace(
+                generated, "- thor-rust-68kz [open] Fix\n- thor-rust-4bls.3 [open] Child", 1
+            ),
+        )
+        os.environ["FAKE_BD_CLOSED"] = "thor-rust-68kz,thor-rust-4bls.3"
+        _code, lines = handoffs.pickup(cfg, trk, hid, dry=True)
+        self.assertIn("closed since: thor-rust-68kz", lines)
+        self.assertIn("closed since: thor-rust-4bls.3", lines)
+        log = self.bd_log_text()
+        self.assertIn("show thor-rust-68kz --json", log)
+        self.assertNotIn("show thor-rust --json", log)  # never the bare prefix
+
+
 class TestCheckAndPrivate(HandoffBase):
     def test_check_fails_on_marker_then_passes(self):
         kb = self.make_kb()
