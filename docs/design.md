@@ -53,7 +53,7 @@ are large, shared, and do not belong in a knowledge base. Only a small input
 that git could not recover is preserved in the record, because it would
 otherwise be lost. Each record carries a verdict, `reconstructable: yes` or
 `no`, with reasons such as an unpushed commit, an unhashed dataset, a
-volatile path or a remote input that was never verified. The verdict never
+volatile path or a remote input or output that was never verified. The verdict never
 blocks a run; it states what repeating the run would take.
 
 **Fact and inference apart.** The agent that runs an experiment writes the

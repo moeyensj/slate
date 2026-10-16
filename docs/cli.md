@@ -237,11 +237,11 @@ file, a directory or a URI, optionally prefixed `a:` or `b:` to assign it to
 an arm. For every input the check records, in `provenance.json`: the
 resolved absolute path, size, mtime and sha256 (a directory: a per-file list
 and a tree hash over the sorted `relpath` and `sha256` pairs; a URI: a
-pointer only, `verified: false` and the time it was recorded, since nothing
-is fetched or probed, and it counts against the verdict). Hashes are cached
-in `.slate-private/hash-cache.json` by path, size and mtime so a large
-dataset is hashed once. A file over `max_hash_mb` is recorded by size and
-mtime only and marked `unhashed`; the files of a directory are hashed
+pointer only, with `verified: false` and `recorded: <timestamp>`, since
+nothing is fetched or probed, and it counts against the verdict). Hashes
+are cached in `.slate-private/hash-cache.json` by path, size and mtime so a
+large dataset is hashed once. A file over `max_hash_mb` is recorded by size
+and mtime only and marked `unhashed`; the files of a directory are hashed
 whatever their size, through the same cache, so that the record identifies
 each of them and a sweep can free them. Wherever a record is later held
 against the disk (`exp files --verify`, `data verify`, a `dataset:` input
@@ -289,11 +289,12 @@ instead, and the names so noted are kept in `provenance.json` under
 `provenance.binaries` entry that does not exist;
 uncommitted changes that were not fully preserved; an input with no hash
 that is neither recoverable from git nor preserved; an input or output
-under a volatile prefix; an input or output that is a URI, which slate never
-fetches or verifies (to make such a run reconstructable, fetch the data and
-register it with `slate data adopt`, then declare `dataset:<slug>`). A
-hashed input is identified, not stored: repeating
-the run still needs the file to exist where the record says. `no` does not
+under a volatile prefix; an input or output that is a URI (for an input,
+fetch the data, register the copy with `slate data adopt` and declare
+`dataset:<slug>`; for an output, write it locally, under `$SLATE_OUT`, and
+copy it out after the run). A hashed input is identified, not stored:
+repeating the run still needs the file to exist where the record says. `no`
+does not
 fail the check: the run may be worth making anyway, and the record says
 what it would take to repeat it. The verdict is computed by the check and
 not recomputed afterwards (harvest only adds `input mutated during run`),
@@ -471,8 +472,8 @@ against the recorded state and says whether the result reproduces. It
 refuses when the verdict is `reconstructable: no` (`--force` overrides and
 prints the reasons; a run that reads or writes a URI is such a run, and its
 rerun cannot show that the remote data was the same), and always refuses
-when a declared input no longer
-matches its recorded hash: a run on different data is a new experiment. It
+when a declared input no longer matches its recorded hash: a run on
+different data is a new experiment. It
 builds `<tmp>/<repo>` for every covered repository except the knowledge
 base, from a shared clone checked out at the recorded sha with that
 repository's `dirty/<repo>.patch` applied; the original working trees are
