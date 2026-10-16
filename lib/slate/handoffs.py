@@ -14,14 +14,15 @@ from . import decisions, gitstate, records, runs, scan, util
 from .tracker import TrackerError
 
 _STATE_RE = re.compile(r"```json slate-state\n(.*?)\n```", re.DOTALL)
-# A generated Tracker line is `- <id> [<status>] <title>`, so the id is read
-# back from that shape, whatever a tracker's ids look like. A line written by
-# hand is searched for anything shaped like a beads id instead: <prefix>-<short
-# id>, where the prefix (set by `bd init`, usually the project directory's
-# name) may itself contain hyphens, and a child issue carries one or more `.N`
-# suffixes: thor-rust-68kz, thor-rust-4bls.3.
-_TRACKER_LINE_RE = re.compile(r"^- (\S+) \[")
-_ISSUE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*-[0-9a-z]{4,}(?:\.[0-9]+)*\b")
+# A generated Tracker line is `- <id> [<status>] <title>`, so the id (always
+# hyphenated) is read back from that whole shape, whatever a tracker's ids
+# look like; the title is not searched. A line of any other shape is searched
+# for anything shaped like a beads id: <prefix>-<short id>, where the prefix
+# (set by `bd init`, usually the project directory's name) may carry up to
+# four more hyphenated parts, and a child issue one or more `.N` suffixes:
+# thor-rust-68kz, thor-rust-4bls.3.
+_TRACKER_LINE_RE = re.compile(r"^- (\S*-\S*) \[[a-z_]+\] ")
+_ISSUE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+){0,4}-[0-9a-z]{4,}(?:\.[0-9]+)*\b")
 HARD_STATES = ("diverged", "branch gone", "missing")
 
 

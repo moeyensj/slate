@@ -135,9 +135,18 @@ class TestIssueIds(HandoffBase):
         self.assertNotIn("pre-registration", ids)  # a title is not searched
 
     def test_hand_written_lines_are_searched_for_hyphenated_ids(self):
-        section = "## Tracker\n\nsee thor-rust-68kz and thor-rust-4bls.3, then bd-open1\n"
+        # Only the whole generated shape is read as a generated line; a bullet
+        # of any other shape, a placeholder id included, is searched instead.
+        section = (
+            "## Tracker\n\n"
+            "see thor-rust-68kz and thor-rust-4bls.3, then bd-open1\n"
+            "- See [bd-abc1](http://x) for the plan\n"
+            "- Blocked [waiting on infra] thor-rust-9k2m\n"
+            "- ? [open] an issue bd returned without an id\n"
+        )
         self.assertEqual(
-            handoffs._issue_ids(section), ["bd-open1", "thor-rust-4bls.3", "thor-rust-68kz"]
+            handoffs._issue_ids(section),
+            ["bd-abc1", "bd-open1", "thor-rust-4bls.3", "thor-rust-68kz", "thor-rust-9k2m"],
         )
 
     def test_pickup_reports_closed_hyphenated_ids(self):
