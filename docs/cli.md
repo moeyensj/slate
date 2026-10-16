@@ -243,13 +243,15 @@ are cached in `.slate-private/hash-cache.json` by path, size and mtime so a
 large dataset is hashed once. A file over `max_hash_mb` is recorded by size
 and mtime only and marked `unhashed`; the files of a directory are hashed
 whatever their size, through the same cache, so that the record identifies
-each of them and a sweep can free them. Wherever a record is later held
-against the disk (`exp files --verify`, `data verify`, a `dataset:` input
-at check, the input re-check at harvest, `exp rerun`), a file is held to
-its recorded size, and to its recorded hash when the record has one,
-whatever `max_hash_mb` is now; a file recorded without a hash is held to
-its size (and, where one was recorded, its mtime). An
-input that sits inside a covered repository, tracked and unmodified, is
+each of them and a sweep can free them. Wherever a record is later checked
+against the disk (`exp files --verify`, `data verify`, the input re-check
+at harvest, `exp rerun`), a file is held to its recorded size, and to its
+recorded hash when the record has one, whatever `max_hash_mb` is now; a
+file recorded without a hash is held to its size (the harvest re-check
+also counts it as changed once its mtime moves). The one exception is the
+pre-run check of a `dataset:` input, which must stay cheap: there a file
+over the cap is held to its size, and only `data verify` reads it in full.
+An input that sits inside a covered repository, tracked and unmodified, is
 marked `recoverable: git` with its repository, path and blob sha. An input
 that git cannot recover (untracked, modified, or outside every repository)
 and is no larger than `preserve_kb` is copied to `preserved/`, because it
@@ -517,8 +519,8 @@ dataset that already exists: it hashes the files into `MANIFEST.json` (a
 lone file over `max_hash_mb` by size only; a directory's files whatever
 their size) and sets `status: built` with no recipe. A PATH that is a
 directory stands for every file beneath it. Nothing is written until every
-file has been read,
-so a failure leaves no half-made record. An adopted dataset is
+file has been read, so a failure leaves no half-made record. An adopted
+dataset is
 `rebuildable: no`. `--parent` names the dataset it replaces or was cut from,
 which is how a refreshed copy of a moving source is recorded: adopt it again
 as a child of the stale one.
@@ -533,9 +535,10 @@ as a parent.
 
 Any `inputs.txt` line may be `dataset:<slug>`. The check fails when the
 dataset does not exist or is not `built`, verifies its files against the
-manifest (size, then the recorded hash through the hash cache, so a file is
-read once per size and mtime),
-and records the dataset id and the sha256 of its `MANIFEST.json`. A dataset
+manifest (size, then the recorded hash through the hash cache for a file up
+to `max_hash_mb`, read once per size and mtime; a larger file is held to
+its size here and read in full only by `data verify`), and records the
+dataset id and the sha256 of its `MANIFEST.json`. A dataset
 that no longer matches its manifest adds a reason to the verdict.
 
 `slate data list` prints id, status, rebuildable, files, bytes and the

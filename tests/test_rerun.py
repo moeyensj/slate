@@ -212,6 +212,27 @@ class TestInputsChanged(RerunBase):
         os.remove(os.path.join(d, "b.txt"))
         self.assertEqual(runs._inputs_changed(cfg, prov), [d])
 
+    def test_directory_file_never_read_counts_as_changed(self):
+        # A file the walk could not read was recorded with neither size nor
+        # hash; nothing can show a rerun reads the same bytes.
+        kb = self.make_kb()
+        d = os.path.join(self.tmp, "bundle")
+        os.makedirs(d)
+        with open(os.path.join(d, "a.txt"), "w") as fh:
+            fh.write("readable now")
+        prov = {
+            "inputs": [
+                {
+                    "input": d,
+                    "kind": "directory",
+                    "path": d,
+                    "files": [{"relpath": "a.txt", "sha256": None, "size": None}],
+                    "tree_hash": "x",
+                }
+            ]
+        }
+        self.assertEqual(runs._inputs_changed(self.cfg(kb), prov), [d])
+
     def test_file_input_hash_checked_whatever_the_cap_is_now(self):
         kb = self.make_kb()
         data = os.path.join(self.tmp, "data.txt")
@@ -227,6 +248,25 @@ class TestInputsChanged(RerunBase):
         with open(data, "w") as fh:
             fh.write("v1\n")  # same length
         self.assertEqual(runs._inputs_changed(low, prov), [data])
+
+
+class TestUriOutput(RerunBase):
+    def test_uri_output_refuses_without_force_and_is_remote_under_it(self):
+        kb = self.make_kb()
+        repo = os.path.join(self.tmp, "repoA")
+        self.git_init(repo)
+        self.push(repo)
+        uri = "gs://some-bucket/out/result.parquet"
+        cfg, eid, rec = self.run_exp(
+            kb, "#!/bin/sh\necho fixed > results/out.txt\n", outputs=f"results/out.txt\n{uri}\n"
+        )
+        code, lines = runs.rerun(cfg, eid)
+        self.assertEqual(code, 1, "\n".join(lines))
+        self.assertIn(f"  - unverified URI output: {uri}", lines)
+        code2, lines2 = runs.rerun(cfg, eid, force=True)
+        self.assertEqual(code2, 0, "\n".join(lines2))
+        self.assertIn(f"  {uri}: remote", lines2)
+        self.assertTrue(any("reproduced: yes" in ln for ln in lines2), lines2)
 
 
 class TestTreeIsolationAndTemp(RerunBase):
@@ -250,25 +290,6 @@ class TestTreeIsolationAndTemp(RerunBase):
         with patcher:
             code, lines = runs.rerun(cfg, eid, keep=True)
         self.assertEqual(code, 0, "\n".join(lines))
-class TestUriOutput(RerunBase):
-    def test_uri_output_refuses_without_force_and_is_remote_under_it(self):
-        kb = self.make_kb()
-        repo = os.path.join(self.tmp, "repoA")
-        self.git_init(repo)
-        self.push(repo)
-        uri = "gs://some-bucket/out/result.parquet"
-        cfg, eid, rec = self.run_exp(
-            kb, "#!/bin/sh\necho fixed > results/out.txt\n", outputs=f"results/out.txt\n{uri}\n"
-        )
-        code, lines = runs.rerun(cfg, eid)
-        self.assertEqual(code, 1, "\n".join(lines))
-        self.assertIn(f"  - unverified URI output: {uri}", lines)
-        code2, lines2 = runs.rerun(cfg, eid, force=True)
-        self.assertEqual(code2, 0, "\n".join(lines2))
-        self.assertIn(f"  {uri}: remote", lines2)
-        self.assertTrue(any("reproduced: yes" in ln for ln in lines2), lines2)
-
-
         # The original working tree is byte-for-byte unchanged.
         self.assertEqual(self.git(repo, "status", "--porcelain").stdout, before_status)
         self.assertEqual(self.head(repo), before_head)

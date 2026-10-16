@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 
 from harness import Base
 from slate import arcs, records, runs, scan, tracker, util
@@ -92,6 +94,36 @@ class TestVerify(FilesBase):
         with open(os.path.join(rec, "results", "out", "c.txt"), "w") as fh:
             fh.write("new\n")  # a file harvest never saw
         self.assertEqual(self._output_state(cfg, eid), "changed")
+
+    def test_directory_output_verifies_after_the_knowledge_base_moved(self):
+        kb = self.make_kb()
+        run_sh = "#!/bin/sh\nmkdir -p results/out\necho aaa > results/out/a.txt\n"
+        cfg, eid, rec = self.build(kb, run_sh, "none\n", "results/out\n")
+        runs.start(cfg, rec, detach=False)
+        moved = kb + "-moved"
+        shutil.move(kb, moved)  # the record's files are byte-identical, elsewhere
+        cfg2 = self.cfg(moved)
+        self.assertEqual(self._output_state(cfg2, eid), "present")
+        rec2 = os.path.join(moved, os.path.relpath(rec, kb))
+        a = os.path.join(rec2, "results", "out", "a.txt")
+        with open(a, "w") as fh:
+            fh.write("aab\n")
+        self.assertEqual(self._output_state(cfg2, eid), "changed")
+        # A record written before the path within the directory was kept is
+        # held to its tree hash, as before.
+        with open(a, "w") as fh:
+            fh.write("aaa\n")
+        outcome_path = os.path.join(rec2, "outcome.json")
+        with open(outcome_path) as fh:
+            outcome = json.load(fh)
+        for f in outcome["outputs"][0]["files"]:
+            del f["relpath"]
+        with open(outcome_path, "w") as fh:
+            json.dump(outcome, fh)
+        self.assertEqual(self._output_state(cfg2, eid), "present")
+        with open(a, "w") as fh:
+            fh.write("aab\n")
+        self.assertEqual(self._output_state(cfg2, eid), "changed")
 
     def test_recorded_hash_is_checked_whatever_the_cap_is_now(self):
         kb = self.make_kb()

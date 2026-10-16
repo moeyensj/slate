@@ -115,11 +115,14 @@ def verify(cfg, record_dir):
 
 
 def matches_via_cache(cfg, record_dir, cache):
-    """The same match through the hash cache: a size check, then the recorded
-    hash, read once per size and mtime and whatever ``max_hash_mb`` is now."""
+    """The cheap match a pre-run check makes: a size check, then the recorded
+    hash through the hash cache for a file up to ``max_hash_mb``, read once
+    per size and mtime. A larger file is held to its size here, so the gate
+    never reads it; :func:`verify` reads it in full."""
     man = read_manifest(record_dir)
     if not man:
         return False, ["no manifest"]
+    cap = cfg.max_hash_mb * 1024 * 1024
     diffs = []
     for f in man.get("files", []):
         path = f["path"]
@@ -134,8 +137,8 @@ def matches_via_cache(cfg, record_dir, cache):
         rec = f.get("sha256")
         if rec is None:
             continue  # recorded without a hash: held to its size only
-        cur, _unhashed = cache.sha256(path, None)
-        if cur != rec:
+        cur, unhashed = cache.sha256(path, cap)
+        if not unhashed and cur != rec:
             diffs.append(f"hash changed: {path}")
     return (not diffs), diffs
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import unittest
 
 from harness import Base
 from slate import records, runs, util
@@ -495,6 +496,7 @@ class TestHashCache(InputsBase):
         self.assertIsNone(entry["sha256"])
         self.assertIn(f"input not reproducible: {f}", self.prov(rec)["reconstructable_reasons"])
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
     def test_directory_input_is_hashed_through_the_cache(self):
         kb, rec = self.prep()
         cfg = self.cfg(kb)

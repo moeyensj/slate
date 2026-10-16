@@ -360,6 +360,8 @@ def _file_differs(path, size, sha):
         st = os.stat(path)
     except OSError:
         return "missing"
+    if size is None and sha is None:
+        return "not recorded"  # unreadable when recorded: nothing can show it is the same
     if size is not None and st.st_size != size:
         return "size changed"
     if sha is not None:
@@ -372,13 +374,13 @@ def _file_differs(path, size, sha):
 
 
 def _dir_differs(base, recorded):
-    """Whether the files under ``base`` still match ``recorded``, a map of real
-    path to (size, sha256) taken from the record: a file added or removed, a
-    size that changed, or a recorded hash that no longer matches."""
-    present = [os.path.realpath(p) for p in _walk_files(base)]
+    """Whether the files under ``base`` still match ``recorded``, a map of path
+    within ``base`` to (size, sha256) taken from the record: a file added or
+    removed, a size that changed, or a recorded hash that no longer matches."""
+    present = {os.path.relpath(p, base): p for p in _walk_files(base)}
     if set(present) != set(recorded):
         return True
-    return any(_file_differs(p, *recorded[p]) for p in present)
+    return any(_file_differs(present[rel], *recorded[rel]) for rel in present)
 
 
 def _record_arc(record_dir):
@@ -940,13 +942,13 @@ def _pid_alive(pid):
     return True
 
 
-def verify_outputs(record_dir, out_dir, start_epoch, cap_bytes, cache=None):
+def verify_outputs(record_dir, out_dir, start_epoch, cap_bytes):
     """Verify declared outputs. Returns (results, all_ok).
 
     A ``$SLATE_OUT`` prefix in an output line is expanded against ``out_dir``.
     Each recorded file carries both its record-relative ``path`` and its
-    absolute ``abspath`` (used by the manifest, the files view and the sweep).
-    A directory's files are hashed through ``cache`` when one is given.
+    absolute ``abspath`` (used by the manifest, the files view and the sweep);
+    a file of a directory output also carries its ``relpath`` within it.
     """
     results = []
     all_ok = True
@@ -963,14 +965,20 @@ def verify_outputs(record_dir, out_dir, start_epoch, cap_bytes, cache=None):
             if os.path.isdir(m):
                 # A directory output stands for every file beneath it; each file
                 # is verified by the same rules, and at least one is required.
-                dir_files, tree_hash = _dir_tree(m, cache)
+                dir_files, tree_hash = _dir_tree(m)
                 if not dir_files:
                     ok = False
                 for df in dir_files:
                     full = os.path.join(m, df["relpath"])
                     ok = (
                         _append_output_file(
-                            detail, record_dir, full, start_epoch, cap_bytes, df["sha256"]
+                            detail,
+                            record_dir,
+                            full,
+                            start_epoch,
+                            cap_bytes,
+                            df["sha256"],
+                            relpath=df["relpath"],
                         )
                         and ok
                     )
@@ -985,12 +993,15 @@ def verify_outputs(record_dir, out_dir, start_epoch, cap_bytes, cache=None):
     return results, all_ok
 
 
-def _append_output_file(detail, record_dir, full, start_epoch, cap_bytes, precomputed_sha):
+def _append_output_file(
+    detail, record_dir, full, start_epoch, cap_bytes, precomputed_sha, relpath=None
+):
     """Verify one output file and append it to ``detail['files']``. Returns its ok.
 
     ``precomputed_sha`` is the hash already taken by the directory walk (which
     hashes every file, as it does for directory inputs); a lone file is hashed
-    under the cap.
+    under the cap. ``relpath`` is the file's path within a directory output,
+    what a later ``--verify`` holds it to wherever the record then sits.
     """
     try:
         st = os.stat(full)
@@ -1004,16 +1015,17 @@ def _append_output_file(detail, record_dir, full, start_epoch, cap_bytes, precom
         sha = precomputed_sha
     else:
         sha = _sha256(full, cap_bytes)
-    detail["files"].append(
-        {
-            "path": os.path.relpath(full, record_dir),
-            "abspath": os.path.abspath(full),
-            "size": st.st_size,
-            "empty": empty,
-            "stale": stale,
-            "sha256": sha,
-        }
-    )
+    entry = {
+        "path": os.path.relpath(full, record_dir),
+        "abspath": os.path.abspath(full),
+        "size": st.st_size,
+        "empty": empty,
+        "stale": stale,
+        "sha256": sha,
+    }
+    if relpath is not None:
+        entry["relpath"] = relpath
+    detail["files"].append(entry)
     return not (empty or stale)
 
 
@@ -1118,11 +1130,9 @@ def _harvest_one(cfg, eid, record_dir, host_gone=False):
         if elsewhere and not _files_visible(record_dir, out_dir):
             return f"{eid}  finished on {host}: not every input and output is visible here" + hint
         outcome = _read_json(outcome_path) or {}
-        cache = HashCache(cfg)
         results, all_ok = verify_outputs(
-            record_dir, out_dir, start_epoch, cfg.max_hash_mb * 1024 * 1024, cache
+            record_dir, out_dir, start_epoch, cfg.max_hash_mb * 1024 * 1024
         )
-        cache.save()
         outcome["outputs"] = results
         prov = _load_provenance(record_dir)
         unchecked = []
@@ -1365,7 +1375,7 @@ def _file_state(cfg, record_dir, role, spec, prov_inputs, outcome, verify, out_d
             return "missing", 0
         return "present", sum(_safe_size(m) for m in matches)
     if role == "output" and os.path.isdir(path):
-        return _dir_output_state(record_dir, path, outcome, spec, verify)
+        return _dir_output_state(path, outcome, spec, verify)
     if not os.path.exists(path):
         return "missing", None
     size = _safe_size(path)
@@ -1394,29 +1404,28 @@ def _safe_size(path):
         return None
 
 
-def _recorded_output_files(record_dir, outcome, spec):
-    """{real path: (size, sha256)} for the files harvest recorded under an output spec."""
-    recorded = {}
-    for detail in outcome.get("outputs", []):
-        if detail.get("output") != spec:
-            continue
-        for f in detail.get("files", []):
-            ap = f.get("abspath") or os.path.normpath(os.path.join(record_dir, f.get("path", "")))
-            recorded[os.path.realpath(ap)] = (f.get("size"), f.get("sha256"))
-    return recorded
-
-
-def _dir_output_state(record_dir, path, outcome, spec, verify):
+def _dir_output_state(path, outcome, spec, verify):
     """State/size for a directory output: over its files, changed only under
-    --verify, which holds every file to what harvest recorded for it."""
+    --verify, which holds every file to what harvest recorded for it, by its
+    path within the directory, so a moved knowledge base reads the same. A
+    record from before that path was kept is held to its tree hash."""
     files = _walk_files(path)
     if not files:
         return "missing", 0
     total = sum(_safe_size(f) or 0 for f in files)
     if verify:
-        recorded = _recorded_output_files(record_dir, outcome, spec)
-        if recorded and _dir_differs(path, recorded):
-            return "changed", total
+        for detail in outcome.get("outputs", []):
+            if detail.get("output") != spec:
+                continue
+            listed = detail.get("files", [])
+            recorded = {
+                f["relpath"]: (f.get("size"), f.get("sha256")) for f in listed if "relpath" in f
+            }
+            if listed and len(recorded) == len(listed):
+                if _dir_differs(path, recorded):
+                    return "changed", total
+            elif detail.get("tree_hash") is not None and _dir_tree(path)[1] != detail["tree_hash"]:
+                return "changed", total
     return "present", total
 
 
@@ -1916,11 +1925,7 @@ def _inputs_changed(cfg, prov):
                 continue
             if "files" in entry:
                 recorded = {
-                    os.path.realpath(os.path.join(base, f.get("relpath", ""))): (
-                        f.get("size"),
-                        f.get("sha256"),
-                    )
-                    for f in entry["files"]
+                    f.get("relpath", ""): (f.get("size"), f.get("sha256")) for f in entry["files"]
                 }
                 if _dir_differs(base, recorded):
                     changed.append(entry["input"])

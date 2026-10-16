@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import unittest
 
 from harness import Base
 from slate import arcs, datasets, gitstate, records, runs, tracker
@@ -317,14 +318,50 @@ class TestHashCap(DataBase):
         self.assertEqual(r.code, 0, r.out)
         ok2, diffs2 = datasets.matches_via_cache(cfg, rec, runs.HashCache(cfg))
         self.assertTrue(ok2, diffs2)
-        # Same length, different bytes: the recorded hash still catches it.
+        # Same length, different bytes: `data verify` reads the file and catches
+        # it; the pre-run gate holds a file over the cap to its size only, and
+        # reads it once the cap allows.
         a = os.path.join(src, "a.txt")
         with open(a, "w") as fh:
             fh.write("aab")
         _ok, diffs, _n, _b = datasets.verify(cfg, rec)
         self.assertEqual(diffs, [f"hash changed: {a}"])
-        _ok, diffs3 = datasets.matches_via_cache(cfg, rec, runs.HashCache(cfg))
-        self.assertEqual(diffs3, diffs)
+        ok3, _diffs3 = datasets.matches_via_cache(cfg, rec, runs.HashCache(cfg))
+        self.assertTrue(ok3)
+        full = self.cfg(kb)
+        full.max_hash_mb = 4096
+        _ok, diffs4 = datasets.matches_via_cache(full, rec, runs.HashCache(full))
+        self.assertEqual(diffs4, diffs)
+
+    def test_experiment_check_passes_on_a_dataset_adopted_under_a_low_cap(self):
+        # The symptom in issue #4, end to end: every experiment declaring the
+        # dataset failed its pre-run check with 'hash changed'.
+        kb = self.make_kb(extra_toml="\n[experiment]\nmax_hash_mb = 0\n")
+        cfg = self.cfg(kb)
+        src = TestAdoptDirectory._tree(self)
+        datasets.adopt(cfg, "big", "Big", [src])
+        cfg, eid, rec = TestDatasetInput._exp_with_dataset(self, kb, "dataset:big\n")
+        ok, lines = runs.check(cfg, rec)
+        self.assertTrue(ok, lines)
+        prov = runs._load_provenance(rec)
+        entry = [e for e in prov["inputs"] if e["kind"] == "dataset"][0]
+        self.assertTrue(entry["matches"])
+        self.assertNotIn(
+            "dataset no longer matches its manifest: big", prov["reconstructable_reasons"]
+        )
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_unreadable_file_is_reported_by_verify(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        src = TestAdoptDirectory._tree(self)
+        _id, rec = datasets.adopt(cfg, "d", "D", [src])
+        bad = os.path.join(src, "a.txt")
+        os.chmod(bad, 0)
+        self.addCleanup(os.chmod, bad, 0o644)
+        ok, diffs, _n, _b = datasets.verify(cfg, rec)
+        self.assertFalse(ok)
+        self.assertEqual(diffs, [f"unreadable: {bad}"])
 
     def test_lone_file_over_the_cap_is_held_to_its_size(self):
         kb = self.make_kb(extra_toml="\n[experiment]\nmax_hash_mb = 0\n")
@@ -343,6 +380,7 @@ class TestHashCap(DataBase):
         _ok, diffs, _n, _b = datasets.verify(cfg, rec)
         self.assertEqual(diffs, [f"size changed: {raw}"])
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
     def test_adoption_warms_the_cache_the_input_check_reads(self):
         kb = self.make_kb()
         cfg = self.cfg(kb)
