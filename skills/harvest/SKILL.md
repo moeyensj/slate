@@ -18,8 +18,10 @@ the start of the run. It prints one row each: `done`, `failed`, `lost` (the
 process died without writing an outcome, for instance across a reboot),
 still `running`, or `running on <host>` / `finished on <host>` for a run
 started on another machine whose process or files cannot be checked from
-here: leave that record alone and harvest it on that host; when that host
-is gone for good, `slate exp abandon <id> --reason "..."` settles it.
+here: leave that record alone and harvest it on that host. Only when the
+owner says that host is gone for good, `slate exp harvest <id> --host-gone`
+settles it here: `lost` without an outcome, otherwise against the files
+visible here, with the inputs that cannot be seen listed as unchecked.
 
 Show the table. Then, for each experiment that settled:
 

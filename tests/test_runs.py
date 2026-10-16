@@ -134,7 +134,7 @@ class TestWaitingAndHarvest(RunBase):
         rows = runs.harvest(cfg, eid)
         self.assertEqual(len(rows), 1)
         self.assertIn(f"{eid}  running on elsewhere: cannot be checked from here", rows[0])
-        self.assertIn("`slate exp abandon`", rows[0])  # the way out when that host is gone
+        self.assertIn("--host-gone", rows[0])  # the way out when that host is gone
         self.assertNotIn("lost", rows[0])
         self.assertEqual(records.read(os.path.join(rec, "README.md")), before)
 
@@ -190,6 +190,71 @@ class TestWaitingAndHarvest(RunBase):
         self.assertNotIn("input mutated during run: " + data, prov["reconstructable_reasons"])
         self.assertEqual(
             records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "running"
+        )
+
+    def test_left_alone_from_another_host_when_a_directory_output_is_empty_here(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(
+            kb,
+            "#!/bin/sh\nmkdir -p results/out\necho a > results/out/a.txt\n",
+            outputs="results/out\n",
+        )
+        runs.start(cfg, rec, detach=False)
+        records.apply_update(os.path.join(rec, "README.md"), {"status": "running"})
+        run_json = _json(os.path.join(rec, "run.json"))
+        run_json["host"] = "elsewhere"
+        with open(os.path.join(rec, "run.json"), "w") as fh:
+            json.dump(run_json, fh)
+        os.remove(os.path.join(rec, "results", "out", "a.txt"))  # the directory synced, empty
+        rows = runs.harvest(cfg, eid)
+        self.assertIn("finished on elsewhere", rows[0])
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "running"
+        )
+
+    def test_host_gone_settles_a_run_without_an_outcome_as_lost(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(kb, "#!/bin/sh\necho hi\n")
+        records.apply_update(
+            os.path.join(rec, "README.md"), {"status": "running", "started": "2026-09-18T00:00:00Z"}
+        )
+        with open(os.path.join(rec, "run.json"), "w") as fh:  # a live pid here means nothing
+            json.dump({"pid": os.getpid(), "start_epoch": 1.0, "host": "elsewhere", "log": "x"}, fh)
+        rows = runs.harvest(cfg, eid, host_gone=True)
+        self.assertIn(f"{eid}  lost  (no outcome; settled here, elsewhere is gone)", rows[0])
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "lost"
+        )
+
+    def test_host_gone_settles_a_finished_run_against_what_is_visible(self):
+        kb = self.make_kb()
+        data = os.path.join(self.tmp, "data.txt")
+        with open(data, "w") as fh:
+            fh.write("v0\n")
+        cfg, eid, rec = self._finished_elsewhere(kb, inputs=data + "\n")
+        os.remove(data)  # the input stayed on the other machine
+        r = self.cli_run("exp", "harvest", eid, "--host-gone", "--kb", kb)
+        self.assertEqual(r.code, 0, r.err)
+        self.assertIn("done", r.out)
+        self.assertIn("inputs_unchecked=1", r.out)
+        outcome = _json(os.path.join(rec, "outcome.json"))
+        self.assertEqual(outcome["settled_away_from"], "elsewhere")
+        self.assertEqual(outcome["inputs_unchecked"], [data])
+        self.assertEqual(outcome["inputs_mutated"], [])  # unseen is not mutated
+        prov = _json(os.path.join(rec, "provenance.json"))
+        self.assertNotIn("input mutated during run: " + data, prov["reconstructable_reasons"])
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "done"
+        )
+
+    def test_host_gone_fails_a_finished_run_whose_output_is_missing(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self._finished_elsewhere(kb)
+        os.remove(os.path.join(rec, "results", "out.txt"))
+        rows = runs.harvest(cfg, eid, host_gone=True)
+        self.assertIn("failed", rows[0])
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "failed"
         )
 
     def test_settled_from_another_host_once_the_outcome_is_written(self):
@@ -372,6 +437,25 @@ class TestInputMutation(RunBase):
 
 
 class TestRecheckInputs(RunBase):
+    def test_harvest_holds_a_touched_input_to_its_hash_whatever_the_cap(self):
+        kb = self.make_kb()
+        data = os.path.join(self.tmp, "data.txt")
+        with open(data, "w") as fh:
+            fh.write("v0\n")
+        cfg, eid, rec = self.build_exp(
+            kb, "#!/bin/sh\necho out > results/out.txt\n", inputs=data + "\n"
+        )
+        runs.start(cfg, rec, detach=True)  # recorded with a hash, under the default cap
+        self.assertTrue(self.wait_for(os.path.join(rec, "outcome.json"), timeout=6.0))
+        old = time.time() - 3600
+        os.utime(data, (old, old))  # the mtime moved; the bytes did not
+        low = self.cfg(kb)
+        low.max_hash_mb = 0  # harvested under a cap that excludes the file
+        rows = runs.harvest(low, eid)
+        self.assertIn("done", rows[0])
+        self.assertNotIn("inputs_mutated", rows[0])
+        self.assertEqual(_json(os.path.join(rec, "outcome.json"))["inputs_mutated"], [])
+
     def _prov_for(self, kb, data):
         cfg, eid, rec = self.build_exp(
             kb, "#!/bin/sh\necho out > results/out.txt\n", inputs=data + "\n"

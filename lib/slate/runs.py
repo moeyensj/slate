@@ -1047,8 +1047,12 @@ def _recheck_inputs(prov):
     return mutated
 
 
-def harvest(cfg, given=None):
-    """Settle running experiments (or one record of either kind). Returns rows."""
+def harvest(cfg, given=None, host_gone=False):
+    """Settle running experiments (or one record of either kind). Returns rows.
+
+    ``host_gone`` settles a record started on another host on the caller's
+    word, where otherwise it would only be reported (see :func:`_harvest_one`).
+    """
     if given:
         eid, record_dir = scan.find_record(cfg, given)
         targets = [(eid, record_dir)]
@@ -1058,17 +1062,19 @@ def harvest(cfg, given=None):
             for eid, d in scan.experiment_dirs(cfg)
             if scan.experiment_field(d, "status") == "running"
         ]
-    return [_harvest_one(cfg, eid, record_dir) for eid, record_dir in targets]
+    return [_harvest_one(cfg, eid, record_dir, host_gone) for eid, record_dir in targets]
 
 
 def _files_visible(record_dir, out_dir):
     """Whether every declared local output and every recorded local input can
-    be seen from this machine: what settling a run from another host needs."""
+    be seen from this machine: what settling a run from another host needs.
+    A directory output counts only when it holds a file."""
     for entry in read_outputs(record_dir):
         if _is_uri(entry):
             continue
         target = _expand_out(record_dir, out_dir, entry)
-        if not (glob.glob(target) if _is_glob(entry) else os.path.exists(target)):
+        matches = glob.glob(target) if _is_glob(entry) else [target]
+        if not any(_walk_files(m) if os.path.isdir(m) else os.path.exists(m) for m in matches):
             return False
     for inp in _load_provenance(record_dir).get("inputs", []):
         if inp.get("kind") in ("file", "directory") and not os.path.exists(inp.get("path") or ""):
@@ -1076,7 +1082,16 @@ def _files_visible(record_dir, out_dir):
     return True
 
 
-def _harvest_one(cfg, eid, record_dir):
+def _unseen_inputs(prov):
+    """The recorded local inputs that cannot be seen from this machine."""
+    return [
+        e["input"]
+        for e in prov.get("inputs", [])
+        if e.get("kind") in ("file", "directory") and not os.path.exists(e.get("path") or "")
+    ]
+
+
+def _harvest_one(cfg, eid, record_dir, host_gone=False):
     outcome_path = os.path.join(record_dir, "outcome.json")
     run_json = _read_json(os.path.join(record_dir, "run.json")) or {}
     start_epoch = run_json.get("start_epoch")
@@ -1091,16 +1106,17 @@ def _harvest_one(cfg, eid, record_dir):
     # A pid can be checked, and a file verified, only where they live. From
     # any other machine that shares the knowledge base a run is settled only
     # when all of its files can be seen from here (as they can from another
-    # login node of the same cluster); otherwise the record is left as it is.
+    # login node of the same cluster); otherwise the record is left as it is,
+    # unless the caller says that host is gone for good (``host_gone``), in
+    # which case the record is settled here and says so.
     host = run_json.get("host")
-    elsewhere = bool(host) and host != util.host()
+    away = bool(host) and host != util.host()
+    elsewhere = away and not host_gone
+    hint = "  (harvest there, or --host-gone if that host is gone for good)"
 
     if os.path.isfile(outcome_path):
         if elsewhere and not _files_visible(record_dir, out_dir):
-            return (
-                f"{eid}  finished on {host}: not every input and output is visible here"
-                "  (harvest there)"
-            )
+            return f"{eid}  finished on {host}: not every input and output is visible here" + hint
         outcome = _read_json(outcome_path) or {}
         cache = HashCache(cfg)
         results, all_ok = verify_outputs(
@@ -1109,7 +1125,13 @@ def _harvest_one(cfg, eid, record_dir):
         cache.save()
         outcome["outputs"] = results
         prov = _load_provenance(record_dir)
-        mutated = _recheck_inputs(prov)
+        unchecked = []
+        if away:  # settled here on the caller's word: an unseen input is not a mutated one
+            unchecked = _unseen_inputs(prov)
+            outcome["settled_away_from"] = host
+            outcome["inputs_unchecked"] = unchecked
+        checkable = [e for e in prov.get("inputs", []) if e.get("input") not in unchecked]
+        mutated = _recheck_inputs({"inputs": checkable})
         outcome["inputs_mutated"] = mutated
         if mutated:
             reasons = prov.get("reconstructable_reasons", [])
@@ -1137,6 +1159,8 @@ def _harvest_one(cfg, eid, record_dir):
             updates["rebuildable"] = datasets.rebuildable(cfg, eid)
         records.apply_update(readme, updates)
         extra = f"  inputs_mutated={len(mutated)}" if mutated else ""
+        if away:
+            extra += f"  inputs_unchecked={len(unchecked)}  (settled here; {host} is gone)"
         row = "{}  {}  exit={}  wall={}s{}".format(
             eid, status, outcome.get("exit_code"), outcome.get("wall_seconds"), extra
         )
@@ -1147,10 +1171,10 @@ def _harvest_one(cfg, eid, record_dir):
 
     elapsed = util.human_age(util.now_utc().timestamp() - start_epoch)
     if elsewhere:  # `lost` is decided where the process lived
-        return (
-            f"{eid}  running on {host}: cannot be checked from here  elapsed={elapsed}"
-            "  (harvest there, or `slate exp abandon` if that host is gone)"
-        )
+        return f"{eid}  running on {host}: cannot be checked from here  elapsed={elapsed}" + hint
+    if away:  # the pid means nothing here; the caller says the host is gone
+        records.apply_update(readme, {"status": "lost"})
+        return f"{eid}  lost  (no outcome; settled here, {host} is gone)"
     if not _pid_alive(run_json.get("pid")):
         records.apply_update(readme, {"status": "lost"})
         return "{}  lost  (pid {} dead, no outcome)".format(eid, run_json.get("pid"))

@@ -87,6 +87,26 @@ class TestStatus(Base):
         r = self.cli_run("status", "--kb", kb)
         self.assertIn("— /slate:harvest", r.out)
 
+    def test_run_finished_elsewhere_counts_only_when_its_files_are_visible(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        trk = tracker.build(cfg)
+        arcs.new(cfg, trk, "arc", "Arc title", "Do the thing.")
+        eid, rec, _ = runs.new(cfg, trk, "arc", "x", "Exp")
+        records.apply_update(os.path.join(rec, "README.md"), {"status": "running"})
+        with open(os.path.join(rec, "outputs.txt"), "w") as fh:
+            fh.write("results/out.txt\n")  # never written here
+        with open(os.path.join(rec, "outcome.json"), "w") as fh:
+            json.dump({"exit_code": 0}, fh)
+        with open(os.path.join(rec, "run.json"), "w") as fh:
+            json.dump({"pid": 1, "host": "elsewhere"}, fh)
+        r = self.cli_run("status", "--kb", kb)
+        self.assertEqual(r.out, "")  # a harvest here could not settle it
+        with open(os.path.join(rec, "run.json"), "w") as fh:
+            json.dump({"pid": 1, "host": util.host()}, fh)
+        r = self.cli_run("status", "--kb", kb)
+        self.assertIn("1 run finished, not harvested", r.out)
+
     def test_hint_is_decisions_when_only_decisions(self):
         kb = self.make_kb()
         cfg = self.cfg(kb)

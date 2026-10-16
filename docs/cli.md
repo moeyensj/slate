@@ -325,30 +325,38 @@ it is expanded before use. `exp check` reports, without failing, a `run.sh`
 that contains the literal path of the repositories root, because a rerun of
 it would execute the present code and not the recorded code.
 
-`slate exp harvest [<id>]` settles every running experiment, or one. For
-each: if `outcome.json` exists, verify the declared outputs (exists,
-non-empty, modified after `started`, size, sha256 unless over
-`max_hash_mb`; a URI output is recorded as a pointer, `verified: null`, and
-does not decide the outcome, since the check already counted it against the
-verdict), write the results into `outcome.json`, re-check every declared
-input against its recorded size and mtime (rehashing it, whatever
-`max_hash_mb` is now, when they differ) and list any that changed under
-`inputs_mutated`, which adds a reason to the verdict, and set
+`slate exp harvest [<id>] [--host-gone]` settles every running experiment,
+or one. For each: if `outcome.json` exists, verify the declared outputs
+(exists, non-empty, modified after `started`, size, sha256 unless over
+`max_hash_mb`; a URI output is recorded as a pointer, `verified: false`,
+and does not decide the outcome, since the check already counted it
+against the verdict), write the results into `outcome.json`, re-check
+every declared input against its recorded size and mtime (rehashing it,
+whatever `max_hash_mb` is now, when they differ) and list any that changed
+under `inputs_mutated`, which adds a reason to the verdict, and set
 `status` to `done` (exit 0 and every output verified) or `failed`; if there
-is no outcome, the run was started on this host (the host name in
-`run.json` is this machine's) and its pid is dead, set `status: lost`;
-otherwise report it as running with elapsed time and the last three log
-lines. A run started on another host is settled here only when every
-declared output and every recorded input can be seen from this machine, as
-they can from another login node of the same cluster; otherwise its row
-says `running on <host>: cannot be checked from here` or `finished on
-<host>: not every input and output is visible here`, and the record is
-left as it is, because a pid can be checked and a file verified only where
-they live. Such a record stays `running` until it is harvested on that
-host; a run whose host is gone for good is settled with
-`slate exp abandon`. Prints one row per experiment, and for each settled
-one a second line `plan committed as <sha>` or `plan was not committed
-before the run`. `slate exp conclude` prints the same line.
+is no outcome and the pid is dead, set `status: lost`; otherwise report it
+as running with elapsed time and the last three log lines.
+
+A pid can be checked, and a file verified, only where they live, so a run
+started on another host (the host name in `run.json` is not this
+machine's) is treated with care. Without an outcome it is reported as
+`running on <host>: cannot be checked from here` and left as it is: `lost`
+is decided only on the host that started it. With an outcome it is settled
+here only when every declared output and every recorded input can be seen
+from this machine, as they can from another login node of the same
+cluster; otherwise it is reported as `finished on <host>: not every input
+and output is visible here` and left as it is. Such a record stays
+`running` until it is harvested on that host. When that host is gone for
+good, `--host-gone` settles the record here on the caller's word: a run
+without an outcome becomes `lost`, and a run with one is settled against
+what is visible here, with the inputs that cannot be seen listed under
+`inputs_unchecked` rather than called mutated, and `settled_away_from`
+naming the host, so the record says how it was settled.
+
+Harvest prints one row per experiment, and for each settled one a second
+line `plan committed as <sha>` or `plan was not committed before the run`.
+`slate exp conclude` prints the same line.
 
 A detached run ends silently: no process tells a session that it finished.
 `slate status` counts finished, unharvested runs, so the session-start hook
@@ -498,7 +506,8 @@ its own `repos:`, else its arc's, else the default, like an experiment.
 `--parent`, repeatable, names a dataset it derives from (`parents:`); an
 unknown parent is refused.
 `slate data check|start|harvest <id>` are the
-experiment commands applied to a dataset record; a harvest that verifies
+experiment commands applied to a dataset record (`harvest` takes
+`--host-gone` as `exp harvest` does); a harvest that verifies
 every output writes `MANIFEST.json` (every file: path, size, sha256; a tree
 hash over all of them) and sets `status: built`.
 

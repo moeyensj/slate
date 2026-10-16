@@ -25,9 +25,10 @@ one, and stop.
    `advanced N`, `diverged`, `branch gone`, `branch merged` or `missing`,
    and `dirty changed` when the working tree differs. It lists tracker
    issues closed since the note was written, settles the arc's running
-   experiments (one started on another host is reported, not settled: see
-   `/slate:harvest`), and warns if another session picked this note up
-   recently.
+   experiments (one started on another host is settled only when it has
+   finished and its files are visible here; otherwise it is reported, not
+   settled: see `/slate:harvest`), and warns if another session picked this
+   note up recently.
    The last line it prints is the note's path.
 2. Read the note. Read nothing else yet: the note's Pointers say what is
    worth opening, and the first action says when.
