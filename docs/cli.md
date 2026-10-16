@@ -10,6 +10,8 @@ Python 3.9 or later, standard library only. Output is a compact plain-text
 table or a few lines; `--json` on any reading command prints JSON instead.
 Exit status: `0` success, `1` a check failed (the output says which), `2`
 usage or configuration error.
+`slate --version` prints the version, the one the plugin manifest carries,
+and exits `0`.
 
 ## Finding the knowledge base
 

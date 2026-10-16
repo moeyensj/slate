@@ -8,6 +8,7 @@ import os
 import sys
 
 from . import (
+    __version__,
     arcs,
     config,
     datasets,
@@ -715,6 +716,9 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="slate", description="slate bookkeeping CLI")
     parser.add_argument("--kb", default=None, help="knowledge-base path")
     parser.add_argument("--json", action="store_true", default=False, help="emit JSON")
+    parser.add_argument(
+        "--version", action="store_true", default=False, help="print the version and exit"
+    )
     sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("init", parents=[common])
@@ -939,6 +943,10 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if getattr(args, "version", False):
+        _out(f"slate {__version__}")
+        return 0
 
     if getattr(args, "supervise", False):
         runs.supervise_main(args.record_dir)
