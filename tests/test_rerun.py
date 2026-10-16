@@ -161,6 +161,26 @@ class TestRefusals(RerunBase):
         self.assertFalse(any(e.endswith("-rerun") for e in scan.experiment_ids(cfg)))
 
 
+class TestUriInput(RerunBase):
+    def test_uri_input_refuses_without_force(self):
+        # A remote input is never verified, so the record cannot show that a
+        # rerun reads the same data; --force takes it on trust.
+        kb = self.make_kb()
+        repo = os.path.join(self.tmp, "repoA")
+        self.git_init(repo)
+        self.push(repo)
+        uri = "gs://some-bucket/path/obs.parquet"
+        cfg, eid, rec = self.run_exp(
+            kb, "#!/bin/sh\necho fixed > results/out.txt\n", inputs=uri + "\n"
+        )
+        self.assertEqual(runs._load_provenance(rec)["reconstructable"], "no")
+        code, lines = runs.rerun(cfg, eid)
+        self.assertEqual(code, 1, "\n".join(lines))
+        self.assertIn(f"  - unverified URI input: {uri}", lines)
+        code2, lines2 = runs.rerun(cfg, eid, force=True)
+        self.assertEqual(code2, 0, "\n".join(lines2))
+
+
 class TestTreeIsolationAndTemp(RerunBase):
     def _dirty_repo_exp(self, kb):
         repo = os.path.join(self.tmp, "repoA")

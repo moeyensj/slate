@@ -184,6 +184,15 @@ class TestRebuildable(DataBase):
             fh.write("tampered seed longer")
         self.assertEqual(datasets.rebuildable(cfg, "child"), "no")
 
+    def test_not_rebuildable_when_a_source_is_a_uri(self):
+        kb = self.make_kb()
+        uri = "https://example.com/raw.csv"
+        cfg, dsid, rec = self.build_and_run(kb, slug="remote", inputs=uri + "\n")
+        self.assertEqual(datasets.status(rec), "built")  # the build itself is fine
+        self.assertEqual(datasets.rebuildable(cfg, dsid), "no")  # its source is unverified
+        reasons = runs._load_provenance(rec)["reconstructable_reasons"]
+        self.assertIn(f"unverified URI input: {uri}", reasons)
+
 
 class TestListShowVerify(DataBase):
     def test_list_columns(self):

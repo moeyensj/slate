@@ -6,7 +6,7 @@ import json
 import os
 
 from harness import Base
-from slate import records, runs
+from slate import records, runs, util
 
 
 def scaffold(
@@ -304,6 +304,7 @@ class TestInputKinds(InputsBase):
         self.assertRegex(entries[d]["tree_hash"], r"^[0-9a-f]{64}$")
         self.assertEqual(len(entries[d]["files"]), 2)
         self.assertEqual(entries["https://example.com/dataset"]["kind"], "uri")
+        self.assertIs(entries["https://example.com/dataset"]["verified"], False)
 
     def test_none_records_no_inputs(self):
         kb, rec = self.prep()
@@ -424,6 +425,32 @@ class TestVerdict(InputsBase):
         runs.check(self.cfg(kb), rec)
         reasons = self.prov(rec)["reconstructable_reasons"]
         self.assertIn("uncommitted changes not fully preserved: repoA", reasons)
+
+    def test_no_when_uri_input(self):
+        # A URI is a pointer: nothing about it is fetched, hashed or probed, so
+        # a run whose only input is remote is not shown to be reconstructable.
+        kb, rec = self.prep()
+        uri = "gs://some-bucket/path/obs.parquet"
+        self.set_inputs(rec, uri)
+        ok, lines = runs.check(self.cfg(kb), rec)
+        self.assertTrue(ok)  # reported, never a hard failure
+        self.assertIn(f"unverified URI input: {uri}", lines)
+        prov = self.prov(rec)
+        self.assertEqual(prov["reconstructable"], "no")
+        self.assertEqual(prov["reconstructable_reasons"], [f"unverified URI input: {uri}"])
+        entry = self.by_input(rec)[uri]
+        self.assertIs(entry["verified"], False)
+        self.assertIsNotNone(util.parse_ts(entry["recorded"]))  # when the pointer was taken
+
+    def test_no_when_uri_output(self):
+        kb, rec = self.prep()
+        with open(os.path.join(rec, "outputs.txt"), "w") as fh:
+            fh.write("results/x\ngs://some-bucket/out/result.parquet\n")
+        ok, lines = runs.check(self.cfg(kb), rec)
+        self.assertTrue(ok)
+        self.assertIn("unverified URI output: gs://some-bucket/out/result.parquet", lines)
+        reasons = self.prov(rec)["reconstructable_reasons"]
+        self.assertIn("unverified URI output: gs://some-bucket/out/result.parquet", reasons)
 
     def test_no_when_volatile_input(self):
         # The volatile check is a prefix test on the declared spec and does not

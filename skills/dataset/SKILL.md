@@ -47,8 +47,11 @@ source. An adopted dataset cannot be rebuilt by slate, and the record says so.
 3. The build is a run like an experiment's. Follow section 3 of
    `/slate:experiment` with the same brief, pointing it at this record: the
    agent writes `run.sh` (the recipe, complete, nothing done by hand),
-   `inputs.txt` (sources by path or URI; parent datasets as
-   `dataset:<slug>`) and `outputs.txt` (the dataset's files, under
+   `inputs.txt` (sources by path; parent datasets as `dataset:<slug>`; a
+   URI is recorded but never verified, and a recipe that reads one makes
+   the dataset `rebuildable: no`, so when a remote source must stay
+   checkable, fetch it and adopt the copy first, then declare it as a
+   parent) and `outputs.txt` (the dataset's files, under
    `$SLATE_OUT`), then `slate data check`, `slate data start`.
 4. After `slate data harvest <id>` reports `built`, write **Contents**:
    facts only: files, rows, columns, counts per class, date range, and how

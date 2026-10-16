@@ -415,8 +415,14 @@ def _resolve_inputs(cfg, record_dir, cache):
             entries.append(entry)
             continue
         if _is_uri(spec):
+            # A pointer only: nothing is fetched or probed, so nothing about
+            # the input is checkable later. The verdict says so; the time
+            # bounds which version of a moving object the run read.
             entry["kind"] = "uri"
             entry["uri"] = spec
+            entry["verified"] = False
+            entry["recorded"] = util.now_ts()
+            reasons.append(f"unverified URI input: {spec}")
             entries.append(entry)
             continue
         abspath = _abspath(record_dir, spec)
@@ -636,13 +642,19 @@ def check(cfg, record_dir):
     if not _is_none(specs):
         for line in specs:
             _arm, spec = _parse_arm(line)
-            if _is_uri(spec) or _is_dataset(spec):
+            if _is_uri(spec):
+                lines.append(f"unverified URI input: {spec}")  # the reason is recorded above
+                continue
+            if _is_dataset(spec):
                 continue
             if _under_volatile(spec, record_dir, cfg.volatile):
                 lines.append(f"volatile input: {spec}")
                 reasons.append(f"volatile input: {spec}")
     for entry in read_outputs(record_dir):
         if _is_uri(entry):
+            # Never fetched at harvest either: the outcome cannot vouch for it.
+            lines.append(f"unverified URI output: {entry}")
+            reasons.append(f"unverified URI output: {entry}")
             continue
         target = _expand_out(record_dir, out_dir, entry)
         if _names_directory(entry, target):

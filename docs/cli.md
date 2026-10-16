@@ -227,15 +227,18 @@ labelled `slate-experiment`, and stores the id. Prints the record path.
 with no inputs says so with the single word `none`); a declared input does
 not exist; a preflight command exits non-zero. It reports without failing:
 each dirty repository; each declared input or output under a `volatile`
-prefix; the arm parity table; and the reconstructability verdict.
+prefix; each URI input or output, which slate never fetches or verifies; the
+arm parity table; and the reconstructability verdict.
 
 **Inputs are referenced, never copied.** Each line of `inputs.txt` is a
 file, a directory or a URI, optionally prefixed `a:` or `b:` to assign it to
 an arm. For every input the check records, in `provenance.json`: the
 resolved absolute path, size, mtime and sha256 (a directory: a per-file list
 and a tree hash over the sorted `relpath` and `sha256` pairs; a URI: a
-pointer, unverified). Hashes are cached in `.slate-private/hash-cache.json`
-by path, size and mtime so a large dataset is hashed once. A file over
+pointer only, `verified: false` and the time it was recorded, since nothing
+is fetched or probed, and it counts against the verdict). Hashes are cached
+in `.slate-private/hash-cache.json` by path, size and mtime so a large
+dataset is hashed once. A file over
 `max_hash_mb` is recorded by size and mtime only and marked `unhashed`. An
 input that sits inside a covered repository, tracked and unmodified, is
 marked `recoverable: git` with its repository, path and blob sha. An input
@@ -276,10 +279,16 @@ instead, and the names so noted are kept in `provenance.json` under
 `provenance.binaries` entry that does not exist;
 uncommitted changes that were not fully preserved; an input with no hash
 that is neither recoverable from git nor preserved; an input or output
-under a volatile prefix. A hashed input is identified, not stored: repeating
+under a volatile prefix; an input or output that is a URI, which slate never
+fetches or verifies (to make such a run reconstructable, fetch the data and
+register it with `slate data adopt`, then declare `dataset:<slug>`). A
+hashed input is identified, not stored: repeating
 the run still needs the file to exist where the record says. `no` does not
 fail the check: the run may be worth making anyway, and the record says
-what it would take to repeat it.
+what it would take to repeat it. The verdict is computed by the check and
+not recomputed afterwards (harvest only adds `input mutated during run`),
+so a record checked before a rule changed keeps its verdict until it is
+checked again.
 
 `slate exp start <id> [--detach]` runs the check, writes `provenance.json`
 (the snapshot, plus `plan_commit`: the knowledge base commit that last
@@ -309,8 +318,10 @@ it would execute the present code and not the recorded code.
 `slate exp harvest [<id>]` settles every running experiment, or one. For
 each: if `outcome.json` exists, verify the declared outputs (exists,
 non-empty, modified after `started`, size, sha256 unless over
-`max_hash_mb`; URIs are recorded as pointers and not verified), write the
-results into `outcome.json`, re-check every declared input against its
+`max_hash_mb`; a URI output is recorded as a pointer, `verified: null`, and
+does not decide the outcome, since the check already counted it against the
+verdict), write the results into `outcome.json`, re-check every declared
+input against its
 recorded size and mtime (rehashing when they differ) and list any that
 changed under `inputs_mutated`, which adds a reason to the verdict, and set
 `status` to `done` (exit 0 and every output verified) or `failed`; if there
@@ -435,7 +446,9 @@ itself is never touched.
 `slate exp rerun <id> [--force] [--keep]` repeats a concluded experiment
 against the recorded state and says whether the result reproduces. It
 refuses when the verdict is `reconstructable: no` (`--force` overrides and
-prints the reasons), and always refuses when a declared input no longer
+prints the reasons; a run that reads or writes a URI is such a run, and its
+rerun cannot show that the remote data was the same), and always refuses
+when a declared input no longer
 matches its recorded hash: a run on different data is a new experiment. It
 builds `<tmp>/<repo>` for every covered repository except the knowledge
 base, from a shared clone checked out at the recorded sha with that
@@ -485,7 +498,11 @@ as a child of the stale one.
 
 `rebuildable:` is computed, never typed: `yes` when the record has a recipe,
 its verdict is `reconstructable: yes`, and every `dataset:` parent is itself
-rebuildable or still matches its manifest.
+rebuildable or still matches its manifest. A recipe that reads a URI makes
+the dataset `rebuildable: no`, since a remote source is never verified; to
+keep such a source checkable, fetch it, register the copy with
+`slate data adopt` (the URL and retrieval date under Sources) and declare it
+as a parent.
 
 Any `inputs.txt` line may be `dataset:<slug>`. The check fails when the
 dataset does not exist or is not `built`, verifies its files against the
