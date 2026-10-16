@@ -86,7 +86,9 @@ knowledge base that already keeps per-campaign folders keeps them.
 
 An experiment is `planned`, then `running`, then `done`, `failed` or
 `lost`, or `abandoned` at any point. `lost` means the process died without
-writing an outcome, for instance across a reboot. A settled experiment is
+writing an outcome, for instance across a reboot; it is decided only on the
+host that started the run, and from any other machine a run without an
+outcome is reported as running there, unchecked. A settled experiment is
 concluded with an outcome: `confirmed`, `refuted`, `null` or
 `inconclusive`. A null result is a full result.
 

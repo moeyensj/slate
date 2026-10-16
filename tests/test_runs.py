@@ -8,7 +8,7 @@ import re
 import time
 
 from harness import Base
-from slate import arcs, records, runs, tracker
+from slate import arcs, records, runs, tracker, util
 
 MODIFY_INPUT = (
     "#!/bin/sh\nprintf 'changed and longer content\\n' > {}\necho out > results/out.txt\n"
@@ -113,11 +113,45 @@ class TestWaitingAndHarvest(RunBase):
             os.path.join(rec, "README.md"), {"status": "running", "started": "2026-09-18T00:00:00Z"}
         )
         with open(os.path.join(rec, "run.json"), "w") as fh:
-            json.dump({"pid": 999999, "start_epoch": 1.0, "host": "h", "log": "x"}, fh)
+            json.dump({"pid": 999999, "start_epoch": 1.0, "host": util.host(), "log": "x"}, fh)
         rows = runs.harvest(cfg, eid)
         self.assertTrue(any("lost" in r for r in rows), rows)
         self.assertEqual(
             records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "lost"
+        )
+
+    def test_not_lost_from_another_host(self):
+        # The pid lives on the host that started the run; from any other machine
+        # that shares the knowledge base the record is reported, never rewritten.
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(kb, "#!/bin/sh\necho hi\n")
+        records.apply_update(
+            os.path.join(rec, "README.md"), {"status": "running", "started": "2026-09-18T00:00:00Z"}
+        )
+        with open(os.path.join(rec, "run.json"), "w") as fh:
+            json.dump({"pid": 999999, "start_epoch": 1.0, "host": "elsewhere", "log": "x"}, fh)
+        before = records.read(os.path.join(rec, "README.md"))
+        rows = runs.harvest(cfg, eid)
+        self.assertEqual(len(rows), 1)
+        self.assertIn(f"{eid}  running on elsewhere: cannot be checked from here", rows[0])
+        self.assertNotIn("lost", rows[0])
+        self.assertEqual(records.read(os.path.join(rec, "README.md")), before)
+
+    def test_settled_from_another_host_once_the_outcome_is_written(self):
+        # A finished run is settled wherever its outputs can be read (a cluster's
+        # login nodes share one file system under different host names).
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(kb, "#!/bin/sh\necho data > results/out.txt\n")
+        runs.start(cfg, rec, detach=False)  # writes outcome.json and settles
+        records.apply_update(os.path.join(rec, "README.md"), {"status": "running"})
+        run_json = _json(os.path.join(rec, "run.json"))
+        run_json["host"] = "elsewhere"
+        with open(os.path.join(rec, "run.json"), "w") as fh:
+            json.dump(run_json, fh)
+        rows = runs.harvest(cfg, eid)
+        self.assertIn("done", rows[0])
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "done"
         )
 
 

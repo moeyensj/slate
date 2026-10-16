@@ -313,9 +313,15 @@ non-empty, modified after `started`, size, sha256 unless over
 results into `outcome.json`, re-check every declared input against its
 recorded size and mtime (rehashing when they differ) and list any that
 changed under `inputs_mutated`, which adds a reason to the verdict, and set
-`status` to `done` (exit 0 and every output verified) or `failed`; if there is no outcome and the pid is dead,
-set `status: lost`; otherwise report it as running with elapsed time and the
-last three log lines. Prints one row per experiment, and for each settled
+`status` to `done` (exit 0 and every output verified) or `failed`; if there
+is no outcome, the run was started on this host and its pid is dead, set
+`status: lost`; if there is no outcome and the run was started on another
+host, print `running on <host>: cannot be checked from here` and leave the
+record as it is, because a pid can be checked only where the process lived
+(a run that has written its outcome is settled from any machine that can
+read its outputs, such as another login node of the same cluster);
+otherwise report it as running with elapsed time and the last three log
+lines. Prints one row per experiment, and for each settled
 one a second line `plan committed as <sha>` or `plan was not committed
 before the run`. `slate exp conclude` prints the same line.
 

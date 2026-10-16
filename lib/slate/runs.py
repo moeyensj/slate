@@ -1057,11 +1057,18 @@ def _harvest_one(cfg, eid, record_dir):
             row += "\n" + _plan_commit_line(record_dir)
         return row
 
+    elapsed = util.human_age(util.now_utc().timestamp() - start_epoch)
+    # A pid can be checked only on the host that started the run. From any
+    # other machine that shares the knowledge base the record is left as it
+    # is: `lost` is decided where the process lived. (A run that has written
+    # its outcome is settled from anywhere its outputs can be read, above.)
+    host = run_json.get("host")
+    if host and host != util.host():
+        return f"{eid}  running on {host}: cannot be checked from here  elapsed={elapsed}"
     if not _pid_alive(run_json.get("pid")):
         records.apply_update(readme, {"status": "lost"})
         return "{}  lost  (pid {} dead, no outcome)".format(eid, run_json.get("pid"))
 
-    elapsed = util.human_age(util.now_utc().timestamp() - start_epoch)
     last = util.tail(os.path.join(record_dir, "log.txt"), 3)
     tail = " | ".join(last) if last else "(no log yet)"
     return f"{eid}  running  elapsed={elapsed}  log: {tail}"
