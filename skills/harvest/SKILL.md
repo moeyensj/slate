@@ -15,8 +15,11 @@ path, since the plugin's `bin/` is not reliably on the PATH.
 Run `slate exp harvest $ARGUMENTS`. It checks each running experiment: exit
 code, whether every declared output exists, is non-empty and is newer than
 the start of the run. It prints one row each: `done`, `failed`, `lost` (the
-process died without writing an outcome, for instance across a reboot), or
-still `running`.
+process died without writing an outcome, for instance across a reboot),
+still `running`, or `running on <host>` / `finished on <host>` for a run
+started on another machine whose process or files cannot be checked from
+here: leave that record alone and harvest it on that host; when that host
+is gone for good, `slate exp abandon <id> --reason "..."` settles it.
 
 Show the table. Then, for each experiment that settled:
 

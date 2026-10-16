@@ -335,14 +335,18 @@ input against its recorded size and mtime (rehashing it, whatever
 `max_hash_mb` is now, when they differ) and list any that changed under
 `inputs_mutated`, which adds a reason to the verdict, and set
 `status` to `done` (exit 0 and every output verified) or `failed`; if there
-is no outcome, the run was started on this host and its pid is dead, set
-`status: lost`; if there is no outcome and the run was started on another
-host, print `running on <host>: cannot be checked from here` and leave the
-record as it is, because a pid can be checked only where the process lived
-(a run that has written its outcome is settled from any machine that can
-read its outputs, such as another login node of the same cluster);
+is no outcome, the run was started on this host (the host name in
+`run.json` is this machine's) and its pid is dead, set `status: lost`;
 otherwise report it as running with elapsed time and the last three log
-lines. Prints one row per experiment, and for each settled
+lines. A run started on another host is settled here only when every
+declared output and every recorded input can be seen from this machine, as
+they can from another login node of the same cluster; otherwise its row
+says `running on <host>: cannot be checked from here` or `finished on
+<host>: not every input and output is visible here`, and the record is
+left as it is, because a pid can be checked and a file verified only where
+they live. Such a record stays `running` until it is harvested on that
+host; a run whose host is gone for good is settled with
+`slate exp abandon`. Prints one row per experiment, and for each settled
 one a second line `plan committed as <sha>` or `plan was not committed
 before the run`. `slate exp conclude` prints the same line.
 

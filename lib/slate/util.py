@@ -50,7 +50,8 @@ def today_str() -> str:
 
 
 def host() -> str:
-    """Short hostname."""
+    """This machine's host name as ``socket.gethostname()`` reports it (a run's
+    record carries it, and harvest compares the two exactly)."""
     return socket.gethostname()
 
 

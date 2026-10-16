@@ -134,8 +134,63 @@ class TestWaitingAndHarvest(RunBase):
         rows = runs.harvest(cfg, eid)
         self.assertEqual(len(rows), 1)
         self.assertIn(f"{eid}  running on elsewhere: cannot be checked from here", rows[0])
+        self.assertIn("`slate exp abandon`", rows[0])  # the way out when that host is gone
         self.assertNotIn("lost", rows[0])
         self.assertEqual(records.read(os.path.join(rec, "README.md")), before)
+
+    def test_lost_when_no_host_was_recorded(self):
+        kb = self.make_kb()
+        cfg, eid, rec = self.build_exp(kb, "#!/bin/sh\necho hi\n")
+        records.apply_update(
+            os.path.join(rec, "README.md"), {"status": "running", "started": "2026-09-18T00:00:00Z"}
+        )
+        with open(os.path.join(rec, "run.json"), "w") as fh:
+            json.dump({"pid": 999999, "start_epoch": 1.0, "log": "x"}, fh)  # a record by hand
+        rows = runs.harvest(cfg, eid)
+        self.assertIn("lost", rows[0])
+
+    def _finished_elsewhere(self, kb, inputs="none\n"):
+        cfg, eid, rec = self.build_exp(
+            kb, "#!/bin/sh\necho data > results/out.txt\n", inputs=inputs
+        )
+        runs.start(cfg, rec, detach=False)  # writes outcome.json and settles
+        records.apply_update(os.path.join(rec, "README.md"), {"status": "running"})
+        run_json = _json(os.path.join(rec, "run.json"))
+        run_json["host"] = "elsewhere"
+        with open(os.path.join(rec, "run.json"), "w") as fh:
+            json.dump(run_json, fh)
+        return cfg, eid, rec
+
+    def test_left_alone_from_another_host_when_an_output_is_not_visible(self):
+        # The knowledge base was pushed with the outcome but the outputs stayed
+        # on the other machine: settling here would call the run failed.
+        kb = self.make_kb()
+        cfg, eid, rec = self._finished_elsewhere(kb)
+        os.remove(os.path.join(rec, "results", "out.txt"))
+        before = {
+            name: records.read(os.path.join(rec, name))
+            for name in ("README.md", "outcome.json", "provenance.json")
+        }
+        rows = runs.harvest(cfg, eid)
+        self.assertIn(f"{eid}  finished on elsewhere: not every input and output", rows[0])
+        for name, text in before.items():
+            self.assertEqual(records.read(os.path.join(rec, name)), text)
+
+    def test_left_alone_from_another_host_when_an_input_is_not_visible(self):
+        # Settling here would record the absent input as mutated during the run.
+        kb = self.make_kb()
+        data = os.path.join(self.tmp, "data.txt")
+        with open(data, "w") as fh:
+            fh.write("v0\n")
+        cfg, eid, rec = self._finished_elsewhere(kb, inputs=data + "\n")
+        os.remove(data)
+        rows = runs.harvest(cfg, eid)
+        self.assertIn("finished on elsewhere", rows[0])
+        prov = _json(os.path.join(rec, "provenance.json"))
+        self.assertNotIn("input mutated during run: " + data, prov["reconstructable_reasons"])
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "running"
+        )
 
     def test_settled_from_another_host_once_the_outcome_is_written(self):
         # A finished run is settled wherever its outputs can be read (a cluster's

@@ -1061,6 +1061,21 @@ def harvest(cfg, given=None):
     return [_harvest_one(cfg, eid, record_dir) for eid, record_dir in targets]
 
 
+def _files_visible(record_dir, out_dir):
+    """Whether every declared local output and every recorded local input can
+    be seen from this machine: what settling a run from another host needs."""
+    for entry in read_outputs(record_dir):
+        if _is_uri(entry):
+            continue
+        target = _expand_out(record_dir, out_dir, entry)
+        if not (glob.glob(target) if _is_glob(entry) else os.path.exists(target)):
+            return False
+    for inp in _load_provenance(record_dir).get("inputs", []):
+        if inp.get("kind") in ("file", "directory") and not os.path.exists(inp.get("path") or ""):
+            return False
+    return True
+
+
 def _harvest_one(cfg, eid, record_dir):
     outcome_path = os.path.join(record_dir, "outcome.json")
     run_json = _read_json(os.path.join(record_dir, "run.json")) or {}
@@ -1073,8 +1088,19 @@ def _harvest_one(cfg, eid, record_dir):
 
     kind = record_kind(record_dir)
     out_dir = out_dir_for(cfg, record_dir, eid)
+    # A pid can be checked, and a file verified, only where they live. From
+    # any other machine that shares the knowledge base a run is settled only
+    # when all of its files can be seen from here (as they can from another
+    # login node of the same cluster); otherwise the record is left as it is.
+    host = run_json.get("host")
+    elsewhere = bool(host) and host != util.host()
 
     if os.path.isfile(outcome_path):
+        if elsewhere and not _files_visible(record_dir, out_dir):
+            return (
+                f"{eid}  finished on {host}: not every input and output is visible here"
+                "  (harvest there)"
+            )
         outcome = _read_json(outcome_path) or {}
         cache = HashCache(cfg)
         results, all_ok = verify_outputs(
@@ -1120,13 +1146,11 @@ def _harvest_one(cfg, eid, record_dir):
         return row
 
     elapsed = util.human_age(util.now_utc().timestamp() - start_epoch)
-    # A pid can be checked only on the host that started the run. From any
-    # other machine that shares the knowledge base the record is left as it
-    # is: `lost` is decided where the process lived. (A run that has written
-    # its outcome is settled from anywhere its outputs can be read, above.)
-    host = run_json.get("host")
-    if host and host != util.host():
-        return f"{eid}  running on {host}: cannot be checked from here  elapsed={elapsed}"
+    if elsewhere:  # `lost` is decided where the process lived
+        return (
+            f"{eid}  running on {host}: cannot be checked from here  elapsed={elapsed}"
+            "  (harvest there, or `slate exp abandon` if that host is gone)"
+        )
     if not _pid_alive(run_json.get("pid")):
         records.apply_update(readme, {"status": "lost"})
         return "{}  lost  (pid {} dead, no outcome)".format(eid, run_json.get("pid"))
