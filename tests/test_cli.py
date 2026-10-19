@@ -1,11 +1,12 @@
-"""CLI-level behaviour: init, where, and arc-epic creation through the tracker."""
+"""CLI-level behaviour: version, init, where, and arc-epic creation through the tracker."""
 
 from __future__ import annotations
 
+import json
 import os
 
-from harness import Base
-from slate import records
+from harness import REPO, Base
+from slate import __version__, records
 
 
 class TestInit(Base):
@@ -85,3 +86,19 @@ class TestArcEpicTracker(Base):
         log = self.bd_log_text()
         self.assertIn("--type task", log)
         self.assertIn("--labels slate-experiment", log)
+
+
+class TestVersion(Base):
+    def test_version_flag_prints_the_package_version(self):
+        r = self.cli_run("--version")
+        self.assertEqual(r.code, 0)
+        self.assertEqual(r.out.strip(), f"slate {__version__}")
+        self.assertEqual(r.err, "")
+
+    def test_manifest_and_package_carry_the_same_version(self):
+        # The plugin manifest is what Claude Code shows, caches by and updates
+        # on; the package constant is what the CLI prints. One number.
+        with open(os.path.join(REPO, ".claude-plugin", "plugin.json")) as fh:
+            manifest = json.load(fh)
+        self.assertEqual(manifest["version"], __version__)
+        self.assertRegex(__version__, r"^\d+\.\d+\.\d+$")

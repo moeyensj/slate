@@ -8,6 +8,7 @@ import os
 import sys
 
 from . import (
+    __version__,
     arcs,
     config,
     datasets,
@@ -135,16 +136,26 @@ def _status_counts(cfg):
         text = records.read(p)
         if records.get_field(text, "status") == "open":
             open_created.append(records.get_field(text, "created"))
-    finished = 0
-    for _eid, d in scan.experiment_dirs(cfg):
-        if scan.experiment_field(d, "status") == "running" and os.path.isfile(
-            os.path.join(d, "outcome.json")
-        ):
-            finished += 1
-    open_dec = len([e for e in decisions.load_all(cfg) if e["fields"].get("status") == "open"])
-    oldest_age = None
     from . import util
 
+    finished = 0
+    for eid, d in scan.experiment_dirs(cfg):
+        if scan.experiment_field(d, "status") != "running" or not os.path.isfile(
+            os.path.join(d, "outcome.json")
+        ):
+            continue
+        # A run that finished on another host counts only when a harvest here
+        # could settle it, else the hint would point at a harvest that does nothing.
+        host = (runs._read_json(os.path.join(d, "run.json")) or {}).get("host")
+        if (
+            host
+            and host != util.host()
+            and not runs._files_visible(d, runs.out_dir_for(cfg, d, eid))
+        ):
+            continue
+        finished += 1
+    open_dec = len([e for e in decisions.load_all(cfg) if e["fields"].get("status") == "open"])
+    oldest_age = None
     for created in open_created:
         dt = util.parse_ts(created)
         if dt:
@@ -326,7 +337,7 @@ def cmd_exp_start(args, cfg, trk):
 
 
 def cmd_exp_harvest(args, cfg, trk):
-    rows = runs.harvest(cfg, args.id)
+    rows = runs.harvest(cfg, args.id, host_gone=args.host_gone)
     if args.json:
         _emit_json(rows)
         return 0
@@ -572,7 +583,7 @@ def cmd_data_start(args, cfg, trk):
 
 
 def cmd_data_harvest(args, cfg, trk):
-    rows = runs.harvest(cfg, args.id)
+    rows = runs.harvest(cfg, args.id, host_gone=args.host_gone)
     for row in rows:
         _out(row)
     return 0
@@ -705,6 +716,9 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="slate", description="slate bookkeeping CLI")
     parser.add_argument("--kb", default=None, help="knowledge-base path")
     parser.add_argument("--json", action="store_true", default=False, help="emit JSON")
+    parser.add_argument(
+        "--version", action="store_true", default=False, help="print the version and exit"
+    )
     sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("init", parents=[common])
@@ -756,6 +770,13 @@ def build_parser():
     e.set_defaults(func=cmd_exp_start)
     e = exp_sub.add_parser("harvest", parents=[common])
     e.add_argument("id", nargs="?")
+    e.add_argument(
+        "--host-gone",
+        action="store_true",
+        dest="host_gone",
+        help="settle a run whose host is gone for good: lost without an outcome, "
+        "else against the files visible here",
+    )
     e.set_defaults(func=cmd_exp_harvest)
     e = exp_sub.add_parser("conclude", parents=[common])
     e.add_argument("id")
@@ -874,6 +895,7 @@ def build_parser():
     ds.set_defaults(func=cmd_data_start)
     dh = data_sub.add_parser("harvest", parents=[common])
     dh.add_argument("id")
+    dh.add_argument("--host-gone", action="store_true", dest="host_gone")
     dh.set_defaults(func=cmd_data_harvest)
     dl = data_sub.add_parser("list", parents=[common])
     dl.set_defaults(func=cmd_data_list)
@@ -921,6 +943,10 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if getattr(args, "version", False):
+        _out(f"slate {__version__}")
+        return 0
 
     if getattr(args, "supervise", False):
         runs.supervise_main(args.record_dir)

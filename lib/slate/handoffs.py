@@ -14,7 +14,15 @@ from . import decisions, gitstate, records, runs, scan, util
 from .tracker import TrackerError
 
 _STATE_RE = re.compile(r"```json slate-state\n(.*?)\n```", re.DOTALL)
-_ISSUE_RE = re.compile(r"\b[a-z][a-z0-9]*-[0-9a-z]{4,}\b")
+# A generated Tracker line is `- <id> [<status>] <title>`, so the id (always
+# hyphenated) is read back from that whole shape, whatever a tracker's ids
+# look like; the title is not searched. A line of any other shape is searched
+# for anything shaped like a beads id: <prefix>-<short id>, where the prefix
+# (set by `bd init`, usually the project directory's name) may carry up to
+# four more hyphenated parts, and a child issue one or more `.N` suffixes:
+# thor-rust-68kz, thor-rust-4bls.3.
+_TRACKER_LINE_RE = re.compile(r"^- (\S*-\S*) \[[a-z_]+\] ")
+_ISSUE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+){0,4}-[0-9a-z]{4,}(?:\.[0-9]+)*\b")
 HARD_STATES = ("diverged", "branch gone", "missing")
 
 
@@ -314,8 +322,15 @@ def _repo_state(cfg, name, rec):
 
 
 def _issue_ids(text):
-    section = _section(text, "Tracker")
-    return sorted(set(_ISSUE_RE.findall(section)))
+    """Every tracker id the note's Tracker section names, sorted."""
+    ids = set()
+    for line in _section(text, "Tracker").splitlines():
+        m = _TRACKER_LINE_RE.match(line)
+        if m:
+            ids.add(m.group(1))
+        else:
+            ids.update(_ISSUE_RE.findall(line))
+    return sorted(ids)
 
 
 def pickup(cfg, tracker, given, dry=False, session=None):

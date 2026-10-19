@@ -29,7 +29,9 @@ The `slate` command is at `<SLATE_BIN>`.
 3. Write `inputs.txt`: every file or directory the run reads, one absolute
    path or URI per line: datasets, configuration files, kernels, and any
    prebuilt library or executable the run loads that `run.sh` does not build. A
-   registered dataset is written `dataset:<slug>` (`slate data list`). NEVER copy
+   registered dataset is written `dataset:<slug>` (`slate data list`). A URI
+   is recorded as a pointer and never verified, so it counts against the
+   reconstructability verdict; prefer a registered dataset. NEVER copy
    an input into the record; `slate` records sizes and hashes from where the
    files are. For a comparison of two arms, prefix each arm's files `a:` and
    `b:`. A run with no inputs has the single word `none`.

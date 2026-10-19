@@ -157,15 +157,24 @@ class HashCache:
         self.dirty = False
 
     def sha256(self, filepath, cap_bytes):
-        """Return (sha_or_None, unhashed). Only ``os.stat`` runs on a cache hit."""
+        """Return (sha_or_None, unhashed); ``cap_bytes`` None hashes whatever the size.
+
+        Only ``os.stat`` runs on a cache hit that holds a hash. The cap is the
+        caller's: a file over it is reported unhashed even when another caller
+        hashed it in full, so a verdict does not depend on what the cache has
+        seen; and a hit left unhashed is hashed after all once the cap no
+        longer excludes it.
+        """
         key = os.path.abspath(filepath)
         st = os.stat(key)
         ent = self.data.get(key)
-        if ent and ent.get("size") == st.st_size and ent.get("mtime_ns") == st.st_mtime_ns:
-            return ent.get("sha256"), bool(ent.get("unhashed"))
-        if st.st_size > cap_bytes:
-            self._store(key, st, None, True)
+        hit = bool(ent) and ent.get("size") == st.st_size and ent.get("mtime_ns") == st.st_mtime_ns
+        if cap_bytes is not None and st.st_size > cap_bytes:
+            if not hit:
+                self._store(key, st, None, True)
             return None, True
+        if hit and ent.get("sha256") is not None:
+            return ent["sha256"], False
         sha = util.sha256_file(key)
         self._store(key, st, sha, False)
         return sha, False
@@ -318,13 +327,19 @@ def _walk_files(base):
     return out
 
 
-def _dir_tree(base):
-    """Return (per-file list, tree hash) for a directory, stable under walk order."""
+def _dir_tree(base, cache=None):
+    """Return (per-file list, tree hash) for a directory, stable under walk order.
+
+    Every file is hashed, whatever ``max_hash_mb`` is: a directory stands for
+    its files, and the record identifies each of them. Through ``cache`` a
+    file is read once per size and mtime. An unreadable file has neither
+    size nor hash.
+    """
     files = []
     for full in _walk_files(base):
         rel = os.path.relpath(full, base)
         try:
-            sha = util.sha256_file(full)
+            sha = cache.sha256(full, None)[0] if cache else util.sha256_file(full)
             size = os.path.getsize(full)
         except OSError:
             sha, size = None, None
@@ -334,6 +349,38 @@ def _dir_tree(base):
     for f in files:
         h.update("{}\0{}\n".format(f["relpath"], f["sha256"]).encode("utf-8"))
     return files, h.hexdigest()
+
+
+def _file_differs(path, size, sha):
+    """Compare a file with its record: by size always, and by hash when the
+    record holds one, whatever ``max_hash_mb`` is now. Returns the first
+    difference (``missing``, ``size changed``, ``hash changed``, ``unreadable``)
+    or None. A file recorded without a hash is held to its size only."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "missing"
+    if size is None and sha is None:
+        return "not recorded"  # unreadable when recorded: nothing can show it is the same
+    if size is not None and st.st_size != size:
+        return "size changed"
+    if sha is not None:
+        try:
+            if util.sha256_file(path) != sha:
+                return "hash changed"
+        except OSError:
+            return "unreadable"
+    return None
+
+
+def _dir_differs(base, recorded):
+    """Whether the files under ``base`` still match ``recorded``, a map of path
+    within ``base`` to (size, sha256) taken from the record: a file added or
+    removed, a size that changed, or a recorded hash that no longer matches."""
+    present = {os.path.relpath(p, base): p for p in _walk_files(base)}
+    if set(present) != set(recorded):
+        return True
+    return any(_file_differs(present[rel], *recorded[rel]) for rel in present)
 
 
 def _record_arc(record_dir):
@@ -415,8 +462,14 @@ def _resolve_inputs(cfg, record_dir, cache):
             entries.append(entry)
             continue
         if _is_uri(spec):
+            # A pointer only: nothing is fetched or probed, so nothing about
+            # the input is checkable later. The verdict says so; the time
+            # bounds which version of a moving object the run read.
             entry["kind"] = "uri"
             entry["uri"] = spec
+            entry["verified"] = False
+            entry["recorded"] = util.now_ts()
+            reasons.append(f"unverified URI input: {spec}")
             entries.append(entry)
             continue
         abspath = _abspath(record_dir, spec)
@@ -428,7 +481,7 @@ def _resolve_inputs(cfg, record_dir, cache):
             continue
         if os.path.isdir(abspath):
             entry["kind"] = "directory"
-            files, tree = _dir_tree(abspath)
+            files, tree = _dir_tree(abspath, cache)
             entry["files"] = files
             entry["tree_hash"] = tree
             entries.append(entry)  # a hashed directory is reproducible-by-record
@@ -636,13 +689,19 @@ def check(cfg, record_dir):
     if not _is_none(specs):
         for line in specs:
             _arm, spec = _parse_arm(line)
-            if _is_uri(spec) or _is_dataset(spec):
+            if _is_uri(spec):
+                lines.append(f"unverified URI input: {spec}")  # the reason is recorded above
+                continue
+            if _is_dataset(spec):
                 continue
             if _under_volatile(spec, record_dir, cfg.volatile):
                 lines.append(f"volatile input: {spec}")
                 reasons.append(f"volatile input: {spec}")
     for entry in read_outputs(record_dir):
         if _is_uri(entry):
+            # Never fetched at harvest either: the outcome cannot vouch for it.
+            lines.append(f"unverified URI output: {entry}")
+            reasons.append(f"unverified URI output: {entry}")
             continue
         target = _expand_out(record_dir, out_dir, entry)
         if _names_directory(entry, target):
@@ -888,7 +947,8 @@ def verify_outputs(record_dir, out_dir, start_epoch, cap_bytes):
 
     A ``$SLATE_OUT`` prefix in an output line is expanded against ``out_dir``.
     Each recorded file carries both its record-relative ``path`` and its
-    absolute ``abspath`` (used by the manifest, the files view and the sweep).
+    absolute ``abspath`` (used by the manifest, the files view and the sweep);
+    a file of a directory output also carries its ``relpath`` within it.
     """
     results = []
     all_ok = True
@@ -912,7 +972,13 @@ def verify_outputs(record_dir, out_dir, start_epoch, cap_bytes):
                     full = os.path.join(m, df["relpath"])
                     ok = (
                         _append_output_file(
-                            detail, record_dir, full, start_epoch, cap_bytes, df["sha256"]
+                            detail,
+                            record_dir,
+                            full,
+                            start_epoch,
+                            cap_bytes,
+                            df["sha256"],
+                            relpath=df["relpath"],
                         )
                         and ok
                     )
@@ -927,11 +993,15 @@ def verify_outputs(record_dir, out_dir, start_epoch, cap_bytes):
     return results, all_ok
 
 
-def _append_output_file(detail, record_dir, full, start_epoch, cap_bytes, precomputed_sha):
+def _append_output_file(
+    detail, record_dir, full, start_epoch, cap_bytes, precomputed_sha, relpath=None
+):
     """Verify one output file and append it to ``detail['files']``. Returns its ok.
 
     ``precomputed_sha`` is the hash already taken by the directory walk (which
-    hashes uncapped, as directory inputs do); a lone file is hashed under the cap.
+    hashes every file, as it does for directory inputs); a lone file is hashed
+    under the cap. ``relpath`` is the file's path within a directory output,
+    what a later ``--verify`` holds it to wherever the record then sits.
     """
     try:
         st = os.stat(full)
@@ -945,22 +1015,28 @@ def _append_output_file(detail, record_dir, full, start_epoch, cap_bytes, precom
         sha = precomputed_sha
     else:
         sha = _sha256(full, cap_bytes)
-    detail["files"].append(
-        {
-            "path": os.path.relpath(full, record_dir),
-            "abspath": os.path.abspath(full),
-            "size": st.st_size,
-            "empty": empty,
-            "stale": stale,
-            "sha256": sha,
-        }
-    )
+    entry = {
+        "path": os.path.relpath(full, record_dir),
+        "abspath": os.path.abspath(full),
+        "size": st.st_size,
+        "empty": empty,
+        "stale": stale,
+        "sha256": sha,
+    }
+    if relpath is not None:
+        entry["relpath"] = relpath
+    detail["files"].append(entry)
     return not (empty or stale)
 
 
-def _recheck_inputs(cfg, prov):
-    """Return the input specs whose bytes changed since ``exp start`` recorded them."""
-    cap = cfg.max_hash_mb * 1024 * 1024
+def _recheck_inputs(prov):
+    """Return the input specs whose bytes changed since ``exp start`` recorded them.
+
+    A file is held to its recorded size and, once its mtime has moved, to its
+    recorded hash (whatever the cap is now); a file recorded without a hash
+    counts as mutated as soon as its mtime moves, since nothing can show that
+    its bytes are the same.
+    """
     mutated = []
     for entry in prov.get("inputs", []):
         if entry.get("kind") != "file":
@@ -978,17 +1054,17 @@ def _recheck_inputs(cfg, prov):
         rec_mtime = entry.get("mtime")
         if rec_mtime is not None and st.st_mtime != rec_mtime:
             rec_sha = entry.get("sha256")
-            if rec_sha is None:
-                mutated.append(entry["input"])
-                continue
-            new_sha = util.sha256_file(path) if st.st_size <= cap else None
-            if new_sha != rec_sha:
+            if rec_sha is None or _file_differs(path, None, rec_sha):
                 mutated.append(entry["input"])
     return mutated
 
 
-def harvest(cfg, given=None):
-    """Settle running experiments (or one record of either kind). Returns rows."""
+def harvest(cfg, given=None, host_gone=False):
+    """Settle running experiments (or one record of either kind). Returns rows.
+
+    ``host_gone`` settles a record started on another host on the caller's
+    word, where otherwise it would only be reported (see :func:`_harvest_one`).
+    """
     if given:
         eid, record_dir = scan.find_record(cfg, given)
         targets = [(eid, record_dir)]
@@ -998,10 +1074,36 @@ def harvest(cfg, given=None):
             for eid, d in scan.experiment_dirs(cfg)
             if scan.experiment_field(d, "status") == "running"
         ]
-    return [_harvest_one(cfg, eid, record_dir) for eid, record_dir in targets]
+    return [_harvest_one(cfg, eid, record_dir, host_gone) for eid, record_dir in targets]
 
 
-def _harvest_one(cfg, eid, record_dir):
+def _files_visible(record_dir, out_dir):
+    """Whether every declared local output and every recorded local input can
+    be seen from this machine: what settling a run from another host needs.
+    A directory output counts only when it holds a file."""
+    for entry in read_outputs(record_dir):
+        if _is_uri(entry):
+            continue
+        target = _expand_out(record_dir, out_dir, entry)
+        matches = glob.glob(target) if _is_glob(entry) else [target]
+        if not any(_walk_files(m) if os.path.isdir(m) else os.path.exists(m) for m in matches):
+            return False
+    for inp in _load_provenance(record_dir).get("inputs", []):
+        if inp.get("kind") in ("file", "directory") and not os.path.exists(inp.get("path") or ""):
+            return False
+    return True
+
+
+def _unseen_inputs(prov):
+    """The recorded local inputs that cannot be seen from this machine."""
+    return [
+        e["input"]
+        for e in prov.get("inputs", [])
+        if e.get("kind") in ("file", "directory") and not os.path.exists(e.get("path") or "")
+    ]
+
+
+def _harvest_one(cfg, eid, record_dir, host_gone=False):
     outcome_path = os.path.join(record_dir, "outcome.json")
     run_json = _read_json(os.path.join(record_dir, "run.json")) or {}
     start_epoch = run_json.get("start_epoch")
@@ -1013,15 +1115,33 @@ def _harvest_one(cfg, eid, record_dir):
 
     kind = record_kind(record_dir)
     out_dir = out_dir_for(cfg, record_dir, eid)
+    # A pid can be checked, and a file verified, only where they live. From
+    # any other machine that shares the knowledge base a run is settled only
+    # when all of its files can be seen from here (as they can from another
+    # login node of the same cluster); otherwise the record is left as it is,
+    # unless the caller says that host is gone for good (``host_gone``), in
+    # which case the record is settled here and says so.
+    host = run_json.get("host")
+    away = bool(host) and host != util.host()
+    elsewhere = away and not host_gone
+    hint = "  (harvest there, or --host-gone if that host is gone for good)"
 
     if os.path.isfile(outcome_path):
+        if elsewhere and not _files_visible(record_dir, out_dir):
+            return f"{eid}  finished on {host}: not every input and output is visible here" + hint
         outcome = _read_json(outcome_path) or {}
         results, all_ok = verify_outputs(
             record_dir, out_dir, start_epoch, cfg.max_hash_mb * 1024 * 1024
         )
         outcome["outputs"] = results
         prov = _load_provenance(record_dir)
-        mutated = _recheck_inputs(cfg, prov)
+        unchecked = []
+        if away:  # settled here on the caller's word: an unseen input is not a mutated one
+            unchecked = _unseen_inputs(prov)
+            outcome["settled_away_from"] = host
+            outcome["inputs_unchecked"] = unchecked
+        checkable = [e for e in prov.get("inputs", []) if e.get("input") not in unchecked]
+        mutated = _recheck_inputs({"inputs": checkable})
         outcome["inputs_mutated"] = mutated
         if mutated:
             reasons = prov.get("reconstructable_reasons", [])
@@ -1049,6 +1169,8 @@ def _harvest_one(cfg, eid, record_dir):
             updates["rebuildable"] = datasets.rebuildable(cfg, eid)
         records.apply_update(readme, updates)
         extra = f"  inputs_mutated={len(mutated)}" if mutated else ""
+        if away:
+            extra += f"  inputs_unchecked={len(unchecked)}  (settled here; {host} is gone)"
         row = "{}  {}  exit={}  wall={}s{}".format(
             eid, status, outcome.get("exit_code"), outcome.get("wall_seconds"), extra
         )
@@ -1057,11 +1179,16 @@ def _harvest_one(cfg, eid, record_dir):
             row += "\n" + _plan_commit_line(record_dir)
         return row
 
+    elapsed = util.human_age(util.now_utc().timestamp() - start_epoch)
+    if elsewhere:  # `lost` is decided where the process lived
+        return f"{eid}  running on {host}: cannot be checked from here  elapsed={elapsed}" + hint
+    if away:  # the pid means nothing here; the caller says the host is gone
+        records.apply_update(readme, {"status": "lost"})
+        return f"{eid}  lost  (no outcome; settled here, {host} is gone)"
     if not _pid_alive(run_json.get("pid")):
         records.apply_update(readme, {"status": "lost"})
         return "{}  lost  (pid {} dead, no outcome)".format(eid, run_json.get("pid"))
 
-    elapsed = util.human_age(util.now_utc().timestamp() - start_epoch)
     last = util.tail(os.path.join(record_dir, "log.txt"), 3)
     tail = " | ".join(last) if last else "(no log yet)"
     return f"{eid}  running  elapsed={elapsed}  log: {tail}"
@@ -1258,10 +1385,9 @@ def _file_state(cfg, record_dir, role, spec, prov_inputs, outcome, verify, out_d
         baseline = _output_baseline(outcome, spec)
     if baseline is None:
         return "present", size
-    cap = cfg.max_hash_mb * 1024 * 1024
     if verify and baseline.get("sha256") is not None:
-        new_sha = util.sha256_file(path) if size is not None and size <= cap else None
-        return ("changed" if new_sha != baseline.get("sha256") else "present"), size
+        differs = _file_differs(path, baseline.get("size"), baseline.get("sha256"))
+        return ("changed" if differs else "present"), size
     rec_size = baseline.get("size")
     if rec_size is not None and size != rec_size:
         return "changed", size
@@ -1279,18 +1405,27 @@ def _safe_size(path):
 
 
 def _dir_output_state(path, outcome, spec, verify):
-    """State/size for a directory output: over its files, changed only under --verify."""
+    """State/size for a directory output: over its files, changed only under
+    --verify, which holds every file to what harvest recorded for it, by its
+    path within the directory, so a moved knowledge base reads the same. A
+    record from before that path was kept is held to its tree hash."""
     files = _walk_files(path)
     if not files:
         return "missing", 0
     total = sum(_safe_size(f) or 0 for f in files)
     if verify:
-        rec_tree = None
-        for d in outcome.get("outputs", []):
-            if d.get("output") == spec:
-                rec_tree = d.get("tree_hash")
-        if rec_tree is not None and _dir_tree(path)[1] != rec_tree:
-            return "changed", total
+        for detail in outcome.get("outputs", []):
+            if detail.get("output") != spec:
+                continue
+            listed = detail.get("files", [])
+            recorded = {
+                f["relpath"]: (f.get("size"), f.get("sha256")) for f in listed if "relpath" in f
+            }
+            if listed and len(recorded) == len(listed):
+                if _dir_differs(path, recorded):
+                    return "changed", total
+            elif detail.get("tree_hash") is not None and _dir_tree(path)[1] != detail["tree_hash"]:
+                return "changed", total
     return "present", total
 
 
@@ -1775,34 +1910,27 @@ def format_sweep(plan, confirmed):
 
 
 def _inputs_changed(cfg, prov):
-    """Return the input specs that no longer match their recorded hash."""
-    cap = cfg.max_hash_mb * 1024 * 1024
+    """Return the input specs that no longer match their record: the size, and
+    the hash wherever the record holds one, whatever the cap is now."""
     changed = []
     for entry in prov.get("inputs", []):
         kind = entry.get("kind")
         if kind == "file":
-            path = entry.get("path")
-            try:
-                st = os.stat(path)
-            except OSError:
+            if _file_differs(entry.get("path"), entry.get("size"), entry.get("sha256")):
                 changed.append(entry["input"])
-                continue
-            if entry.get("size") is not None and st.st_size != entry["size"]:
-                changed.append(entry["input"])
-                continue
-            rec_sha = entry.get("sha256")
-            if rec_sha is not None:
-                cur = util.sha256_file(path) if st.st_size <= cap else None
-                if cur != rec_sha:
-                    changed.append(entry["input"])
         elif kind == "directory":
             base = entry.get("path")
             if not os.path.isdir(base):
                 changed.append(entry["input"])
                 continue
-            _files, tree = _dir_tree(base)
-            if entry.get("tree_hash") is not None and tree != entry["tree_hash"]:
-                changed.append(entry["input"])
+            if "files" in entry:
+                recorded = {
+                    f.get("relpath", ""): (f.get("size"), f.get("sha256")) for f in entry["files"]
+                }
+                if _dir_differs(base, recorded):
+                    changed.append(entry["input"])
+            elif entry.get("tree_hash") is not None and _dir_tree(base)[1] != entry["tree_hash"]:
+                changed.append(entry["input"])  # a record without the per-file list
         elif kind == "dataset":
             from . import datasets
 

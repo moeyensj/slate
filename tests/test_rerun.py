@@ -161,6 +161,114 @@ class TestRefusals(RerunBase):
         self.assertFalse(any(e.endswith("-rerun") for e in scan.experiment_ids(cfg)))
 
 
+class TestUriInput(RerunBase):
+    def test_uri_input_refuses_without_force(self):
+        # A remote input is never verified, so the record cannot show that a
+        # rerun reads the same data; --force takes it on trust.
+        kb = self.make_kb()
+        repo = os.path.join(self.tmp, "repoA")
+        self.git_init(repo)
+        self.push(repo)
+        uri = "gs://some-bucket/path/obs.parquet"
+        cfg, eid, rec = self.run_exp(
+            kb, "#!/bin/sh\necho fixed > results/out.txt\n", inputs=uri + "\n"
+        )
+        self.assertEqual(runs._load_provenance(rec)["reconstructable"], "no")
+        code, lines = runs.rerun(cfg, eid)
+        self.assertEqual(code, 1, "\n".join(lines))
+        self.assertIn(f"  - unverified URI input: {uri}", lines)
+        code2, lines2 = runs.rerun(cfg, eid, force=True)
+        self.assertEqual(code2, 0, "\n".join(lines2))
+
+
+class TestInputsChanged(RerunBase):
+    def test_directory_input_held_to_its_recorded_files(self):
+        kb = self.make_kb()
+        d = os.path.join(self.tmp, "bundle")
+        os.makedirs(d)
+        for name in ("a.txt", "b.txt"):
+            with open(os.path.join(d, name), "w") as fh:
+                fh.write(name + " body")
+        cfg, eid, rec = self.run_exp(
+            kb, "#!/bin/sh\necho fixed > results/out.txt\n", inputs=d + "\n"
+        )
+        prov = runs._load_provenance(rec)
+        self.assertEqual(runs._inputs_changed(cfg, prov), [])
+        low = self.cfg(kb)
+        low.max_hash_mb = 0  # the record's hashes decide, not the cap of the day
+        self.assertEqual(runs._inputs_changed(low, prov), [])
+        a = os.path.join(d, "a.txt")
+        with open(a, "w") as fh:
+            fh.write("A.txt body")  # same length
+        self.assertEqual(runs._inputs_changed(cfg, prov), [d])
+        with open(a, "w") as fh:
+            fh.write("a.txt body")
+        extra = os.path.join(d, "c.txt")
+        with open(extra, "w") as fh:
+            fh.write("added later")
+        self.assertEqual(runs._inputs_changed(cfg, prov), [d])
+        os.remove(extra)
+        self.assertEqual(runs._inputs_changed(cfg, prov), [])
+        os.remove(os.path.join(d, "b.txt"))
+        self.assertEqual(runs._inputs_changed(cfg, prov), [d])
+
+    def test_directory_file_never_read_counts_as_changed(self):
+        # A file the walk could not read was recorded with neither size nor
+        # hash; nothing can show a rerun reads the same bytes.
+        kb = self.make_kb()
+        d = os.path.join(self.tmp, "bundle")
+        os.makedirs(d)
+        with open(os.path.join(d, "a.txt"), "w") as fh:
+            fh.write("readable now")
+        prov = {
+            "inputs": [
+                {
+                    "input": d,
+                    "kind": "directory",
+                    "path": d,
+                    "files": [{"relpath": "a.txt", "sha256": None, "size": None}],
+                    "tree_hash": "x",
+                }
+            ]
+        }
+        self.assertEqual(runs._inputs_changed(self.cfg(kb), prov), [d])
+
+    def test_file_input_hash_checked_whatever_the_cap_is_now(self):
+        kb = self.make_kb()
+        data = os.path.join(self.tmp, "data.txt")
+        with open(data, "w") as fh:
+            fh.write("v0\n")
+        cfg, eid, rec = self.run_exp(
+            kb, "#!/bin/sh\necho fixed > results/out.txt\n", inputs=data + "\n"
+        )
+        prov = runs._load_provenance(rec)
+        low = self.cfg(kb)
+        low.max_hash_mb = 0
+        self.assertEqual(runs._inputs_changed(low, prov), [])  # untouched: no refusal
+        with open(data, "w") as fh:
+            fh.write("v1\n")  # same length
+        self.assertEqual(runs._inputs_changed(low, prov), [data])
+
+
+class TestUriOutput(RerunBase):
+    def test_uri_output_refuses_without_force_and_is_remote_under_it(self):
+        kb = self.make_kb()
+        repo = os.path.join(self.tmp, "repoA")
+        self.git_init(repo)
+        self.push(repo)
+        uri = "gs://some-bucket/out/result.parquet"
+        cfg, eid, rec = self.run_exp(
+            kb, "#!/bin/sh\necho fixed > results/out.txt\n", outputs=f"results/out.txt\n{uri}\n"
+        )
+        code, lines = runs.rerun(cfg, eid)
+        self.assertEqual(code, 1, "\n".join(lines))
+        self.assertIn(f"  - unverified URI output: {uri}", lines)
+        code2, lines2 = runs.rerun(cfg, eid, force=True)
+        self.assertEqual(code2, 0, "\n".join(lines2))
+        self.assertIn(f"  {uri}: remote", lines2)
+        self.assertTrue(any("reproduced: yes" in ln for ln in lines2), lines2)
+
+
 class TestTreeIsolationAndTemp(RerunBase):
     def _dirty_repo_exp(self, kb):
         repo = os.path.join(self.tmp, "repoA")

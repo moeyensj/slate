@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import unittest
 
 from harness import Base
-from slate import records, runs
+from slate import records, runs, util
 
 
 def scaffold(
@@ -304,6 +305,7 @@ class TestInputKinds(InputsBase):
         self.assertRegex(entries[d]["tree_hash"], r"^[0-9a-f]{64}$")
         self.assertEqual(len(entries[d]["files"]), 2)
         self.assertEqual(entries["https://example.com/dataset"]["kind"], "uri")
+        self.assertIs(entries["https://example.com/dataset"]["verified"], False)
 
     def test_none_records_no_inputs(self):
         kb, rec = self.prep()
@@ -425,6 +427,32 @@ class TestVerdict(InputsBase):
         reasons = self.prov(rec)["reconstructable_reasons"]
         self.assertIn("uncommitted changes not fully preserved: repoA", reasons)
 
+    def test_no_when_uri_input(self):
+        # A URI is a pointer: nothing about it is fetched, hashed or probed, so
+        # a run whose only input is remote is not shown to be reconstructable.
+        kb, rec = self.prep()
+        uri = "gs://some-bucket/path/obs.parquet"
+        self.set_inputs(rec, uri)
+        ok, lines = runs.check(self.cfg(kb), rec)
+        self.assertTrue(ok)  # reported, never a hard failure
+        self.assertIn(f"unverified URI input: {uri}", lines)
+        prov = self.prov(rec)
+        self.assertEqual(prov["reconstructable"], "no")
+        self.assertEqual(prov["reconstructable_reasons"], [f"unverified URI input: {uri}"])
+        entry = self.by_input(rec)[uri]
+        self.assertIs(entry["verified"], False)
+        self.assertIsNotNone(util.parse_ts(entry["recorded"]))  # when the pointer was taken
+
+    def test_no_when_uri_output(self):
+        kb, rec = self.prep()
+        with open(os.path.join(rec, "outputs.txt"), "w") as fh:
+            fh.write("results/x\ngs://some-bucket/out/result.parquet\n")
+        ok, lines = runs.check(self.cfg(kb), rec)
+        self.assertTrue(ok)
+        self.assertIn("unverified URI output: gs://some-bucket/out/result.parquet", lines)
+        reasons = self.prov(rec)["reconstructable_reasons"]
+        self.assertIn("unverified URI output: gs://some-bucket/out/result.parquet", reasons)
+
     def test_no_when_volatile_input(self):
         # The volatile check is a prefix test on the declared spec and does not
         # require the file to exist; point it at the harness's fake volatile
@@ -435,6 +463,58 @@ class TestVerdict(InputsBase):
         runs.check(self.cfg(kb), rec)
         reasons = self.prov(rec)["reconstructable_reasons"]
         self.assertIn(f"volatile input: {vol}", reasons)
+
+
+class TestHashCache(InputsBase):
+    def test_cap_is_the_callers_even_on_a_hit(self):
+        kb, _rec = self.prep()
+        cfg = self.cfg(kb)
+        f = os.path.join(self.tmp, "big.bin")
+        with open(f, "w") as fh:
+            fh.write("0123456789")
+        cache = runs.HashCache(cfg)
+        self.assertEqual(cache.sha256(f, 0), (None, True))  # capped: sized only
+        sha, unhashed = cache.sha256(f, None)  # no cap: hashed after all
+        self.assertRegex(sha, r"^[0-9a-f]{64}$")
+        self.assertFalse(unhashed)
+        self.assertEqual(cache.sha256(f, 0), (None, True))  # a capped caller still sees none
+        self.assertEqual(cache.sha256(f, 1024), (sha, False))  # under the cap: the cached hash
+
+    def test_verdict_does_not_depend_on_what_the_cache_has_seen(self):
+        kb, rec = self.prep(extra_toml="\n[experiment]\npreserve_kb = 0\nmax_hash_mb = 0\n")
+        cfg = self.cfg(kb)
+        f = os.path.join(self.tmp, "big.bin")
+        with open(f, "w") as fh:
+            fh.write("0123456789")
+        warm = runs.HashCache(cfg)
+        warm.sha256(f, None)  # a dataset check hashed it in full
+        warm.save()
+        self.set_inputs(rec, f)
+        runs.check(cfg, rec)
+        entry = self.by_input(rec)[f]
+        self.assertTrue(entry["unhashed"])
+        self.assertIsNone(entry["sha256"])
+        self.assertIn(f"input not reproducible: {f}", self.prov(rec)["reconstructable_reasons"])
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_directory_input_is_hashed_through_the_cache(self):
+        kb, rec = self.prep()
+        cfg = self.cfg(kb)
+        d = os.path.join(self.tmp, "adir")
+        os.makedirs(d)
+        for name in ("one.txt", "two.txt"):
+            with open(os.path.join(d, name), "w") as fh:
+                fh.write(name)
+        self.set_inputs(rec, d)
+        runs.check(cfg, rec)
+        first = self.by_input(rec)[d]
+        self.assertTrue(all(f["sha256"] for f in first["files"]))
+        for name in ("one.txt", "two.txt"):  # a re-read would raise; a cache hit must not read
+            os.chmod(os.path.join(d, name), 0)
+            self.addCleanup(os.chmod, os.path.join(d, name), 0o644)
+        ok, _ = runs.check(cfg, rec)
+        self.assertTrue(ok)
+        self.assertEqual(self.by_input(rec)[d], first)
 
 
 class TestPreserveIdempotent(Base):

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 
 from harness import Base
-from slate import arcs, handoffs, records, tracker, util
+from slate import arcs, handoffs, records, runs, tracker, util
 
 
 class PickupBase(Base):
@@ -96,6 +97,25 @@ class TestStates(PickupBase):
         code, lines = handoffs.pickup(cfg, trk, hid, dry=True)
         self.assertEqual(self.state_line(lines), "missing")
         self.assertEqual(code, 1)
+
+
+class TestPickupHarvest(PickupBase):
+    def test_run_on_another_host_is_reported_not_settled(self):
+        cfg, trk, repo, hid, path = self.setup_note()
+        eid, rec, _ = runs.new(cfg, trk, "arc", "run1", "Running one")
+        records.apply_update(
+            os.path.join(rec, "README.md"), {"status": "running", "started": "2026-09-18T00:00:00Z"}
+        )
+        with open(os.path.join(rec, "run.json"), "w") as fh:
+            json.dump({"pid": 999999, "start_epoch": 1.0, "host": "h", "log": "x"}, fh)
+        _code, lines = handoffs.pickup(cfg, trk, hid, dry=True)
+        self.assertTrue(
+            any(ln.startswith(f"harvest: {eid}  running on h: cannot be checked") for ln in lines),
+            lines,
+        )
+        self.assertEqual(
+            records.get_field(records.read(os.path.join(rec, "README.md")), "status"), "running"
+        )
 
 
 class TestPickupBehavior(PickupBase):

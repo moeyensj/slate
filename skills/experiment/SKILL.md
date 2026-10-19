@@ -86,7 +86,10 @@ When the agent reports, read the record's Result section and
 
 - Relay the reconstructability verdict. If it is `no`, give the reasons as
   they are printed (an unpushed commit, an unhashed dataset, a volatile
-  path) and what would fix each. Do not soften it. Relay the plan-commit
+  path, a URI that slate cannot verify) and what would fix each: a remote
+  input becomes checkable once a fetched copy is registered with
+  `slate data adopt` (the URL and retrieval date under Sources) and the run
+  declares `dataset:<slug>` instead. Do not soften it. Relay the plan-commit
   line too: `plan committed as <sha>` is what makes the prediction prior;
   `plan was not committed before the run` means the record cannot show it.
 - Write **Interpretation**: inference, labelled as inference, including

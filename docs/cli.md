@@ -10,6 +10,8 @@ Python 3.9 or later, standard library only. Output is a compact plain-text
 table or a few lines; `--json` on any reading command prints JSON instead.
 Exit status: `0` success, `1` a check failed (the output says which), `2`
 usage or configuration error.
+`slate --version` prints the version, the one the plugin manifest carries,
+and exits `0`.
 
 ## Finding the knowledge base
 
@@ -62,7 +64,9 @@ correct_subject = "Correct {title}"
 [experiment]
 preflight = []             # commands that must exit 0 before a run starts
 volatile = ["/tmp", "/private/tmp", "/var/tmp"]
-max_hash_mb = 4096         # files larger than this are sized, not hashed
+max_hash_mb = 4096         # a declared file larger than this is sized, not
+                           # hashed; the files of a declared directory are
+                           # hashed whatever their size
 preserve_kb = 256          # an input that git cannot recover is kept in the
                            # record when it is no larger than this; 0 = never
 out_root = ""              # where large outputs go: each run gets
@@ -227,17 +231,29 @@ labelled `slate-experiment`, and stores the id. Prints the record path.
 with no inputs says so with the single word `none`); a declared input does
 not exist; a preflight command exits non-zero. It reports without failing:
 each dirty repository; each declared input or output under a `volatile`
-prefix; the arm parity table; and the reconstructability verdict.
+prefix; each URI input or output, which slate never fetches or verifies; the
+arm parity table; and the reconstructability verdict.
 
 **Inputs are referenced, never copied.** Each line of `inputs.txt` is a
 file, a directory or a URI, optionally prefixed `a:` or `b:` to assign it to
 an arm. For every input the check records, in `provenance.json`: the
 resolved absolute path, size, mtime and sha256 (a directory: a per-file list
 and a tree hash over the sorted `relpath` and `sha256` pairs; a URI: a
-pointer, unverified). Hashes are cached in `.slate-private/hash-cache.json`
-by path, size and mtime so a large dataset is hashed once. A file over
-`max_hash_mb` is recorded by size and mtime only and marked `unhashed`. An
-input that sits inside a covered repository, tracked and unmodified, is
+pointer only, with `verified: false` and `recorded: <timestamp>`, since
+nothing is fetched or probed, and it counts against the verdict). Hashes
+are cached in `.slate-private/hash-cache.json` by path, size and mtime so a
+large dataset is hashed once. A file over `max_hash_mb` is recorded by size
+and mtime only and marked `unhashed`; the files of a directory are hashed
+whatever their size, through the same cache, so that the record identifies
+each of them and a sweep can free them. Wherever a record is later checked
+against the disk (`exp files --verify`, `data verify`, the input re-check
+at harvest, `exp rerun`), a file is held to its recorded size, and to its
+recorded hash when the record has one, whatever `max_hash_mb` is now; a
+file recorded without a hash is held to its size (the harvest re-check
+also counts it as changed once its mtime moves). The one exception is the
+pre-run check of a `dataset:` input, which must stay cheap: there a file
+over the cap is held to its size, and only `data verify` reads it in full.
+An input that sits inside a covered repository, tracked and unmodified, is
 marked `recoverable: git` with its repository, path and blob sha. An input
 that git cannot recover (untracked, modified, or outside every repository)
 and is no larger than `preserve_kb` is copied to `preserved/`, because it
@@ -256,8 +272,9 @@ record holds exactly the patches of the repositories it covers now.
 for every file beneath it (walked in sorted order, symbolic links not
 followed). Each file is verified by the same rules as a declared file, the
 directory must hold at least one file, and `outcome.json` lists every file
-with its size and sha256 plus a tree hash over the sorted `relpath` and
-`sha256` pairs, as directory inputs do.
+with its size and sha256 (every file hashed, whatever `max_hash_mb`) plus a
+tree hash over the sorted `relpath` and `sha256` pairs, as directory inputs
+do.
 
 **Arm parity.** When inputs carry `a:` and `b:` prefixes, files are paired
 by basename, then by order. The table lists every file present in one arm
@@ -276,10 +293,17 @@ instead, and the names so noted are kept in `provenance.json` under
 `provenance.binaries` entry that does not exist;
 uncommitted changes that were not fully preserved; an input with no hash
 that is neither recoverable from git nor preserved; an input or output
-under a volatile prefix. A hashed input is identified, not stored: repeating
-the run still needs the file to exist where the record says. `no` does not
+under a volatile prefix; an input or output that is a URI (for an input,
+fetch the data, register the copy with `slate data adopt` and declare
+`dataset:<slug>`; for an output, write it locally, under `$SLATE_OUT`, and
+copy it out after the run). A hashed input is identified, not stored:
+repeating the run still needs the file to exist where the record says. `no`
+does not
 fail the check: the run may be worth making anyway, and the record says
-what it would take to repeat it.
+what it would take to repeat it. The verdict is computed by the check and
+not recomputed afterwards (harvest only adds `input mutated during run`),
+so a record checked before a rule changed keeps its verdict until it is
+checked again.
 
 `slate exp start <id> [--detach]` runs the check, writes `provenance.json`
 (the snapshot, plus `plan_commit`: the knowledge base commit that last
@@ -306,18 +330,38 @@ it is expanded before use. `exp check` reports, without failing, a `run.sh`
 that contains the literal path of the repositories root, because a rerun of
 it would execute the present code and not the recorded code.
 
-`slate exp harvest [<id>]` settles every running experiment, or one. For
-each: if `outcome.json` exists, verify the declared outputs (exists,
-non-empty, modified after `started`, size, sha256 unless over
-`max_hash_mb`; URIs are recorded as pointers and not verified), write the
-results into `outcome.json`, re-check every declared input against its
-recorded size and mtime (rehashing when they differ) and list any that
-changed under `inputs_mutated`, which adds a reason to the verdict, and set
-`status` to `done` (exit 0 and every output verified) or `failed`; if there is no outcome and the pid is dead,
-set `status: lost`; otherwise report it as running with elapsed time and the
-last three log lines. Prints one row per experiment, and for each settled
-one a second line `plan committed as <sha>` or `plan was not committed
-before the run`. `slate exp conclude` prints the same line.
+`slate exp harvest [<id>] [--host-gone]` settles every running experiment,
+or one. For each: if `outcome.json` exists, verify the declared outputs
+(exists, non-empty, modified after `started`, size, sha256 unless over
+`max_hash_mb`; a URI output is recorded as a pointer, `verified: false`,
+and does not decide the outcome, since the check already counted it
+against the verdict), write the results into `outcome.json`, re-check
+every declared input against its recorded size and mtime (rehashing it,
+whatever `max_hash_mb` is now, when they differ) and list any that changed
+under `inputs_mutated`, which adds a reason to the verdict, and set
+`status` to `done` (exit 0 and every output verified) or `failed`; if there
+is no outcome and the pid is dead, set `status: lost`; otherwise report it
+as running with elapsed time and the last three log lines.
+
+A pid can be checked, and a file verified, only where they live, so a run
+started on another host (the host name in `run.json` is not this
+machine's) is treated with care. Without an outcome it is reported as
+`running on <host>: cannot be checked from here` and left as it is: `lost`
+is decided only on the host that started it. With an outcome it is settled
+here only when every declared output and every recorded input can be seen
+from this machine, as they can from another login node of the same
+cluster; otherwise it is reported as `finished on <host>: not every input
+and output is visible here` and left as it is. Such a record stays
+`running` until it is harvested on that host. When that host is gone for
+good, `--host-gone` settles the record here on the caller's word: a run
+without an outcome becomes `lost`, and a run with one is settled against
+what is visible here, with the inputs that cannot be seen listed under
+`inputs_unchecked` rather than called mutated, and `settled_away_from`
+naming the host, so the record says how it was settled.
+
+Harvest prints one row per experiment, and for each settled one a second
+line `plan committed as <sha>` or `plan was not committed before the run`.
+`slate exp conclude` prints the same line.
 
 A detached run ends silently: no process tells a session that it finished.
 `slate status` counts finished, unharvested runs, so the session-start hook
@@ -338,9 +382,10 @@ closes the tracker task with the outcome as the reason.
 holds on disk, one row per declared input and output: experiment, role,
 path, size, state (`present`, `changed` when size or mtime differ from the
 record, `missing`, `remote`), the number of other experiments that declare
-the same path, and the mark. `--verify` rehashes instead of trusting size
-and mtime. A total per experiment, inputs and outputs apart, closes each
-group.
+the same path, and the mark. `--verify` rehashes whatever the record hashed
+instead of trusting size and mtime, and holds a directory output file by
+file to what harvest recorded. A total per experiment, inputs and outputs
+apart, closes each group.
 
 `slate exp mark <id> --outputs|--inputs|--all --reason TEXT` marks an
 experiment's files for deletion: `marked: <date> <scope> <reason>` in the
@@ -429,8 +474,10 @@ itself is never touched.
 `slate exp rerun <id> [--force] [--keep]` repeats a concluded experiment
 against the recorded state and says whether the result reproduces. It
 refuses when the verdict is `reconstructable: no` (`--force` overrides and
-prints the reasons), and always refuses when a declared input no longer
-matches its recorded hash: a run on different data is a new experiment. It
+prints the reasons; a run that reads or writes a URI is such a run, and its
+rerun cannot show that the remote data was the same), and always refuses
+when a declared input no longer matches its recorded hash: a run on
+different data is a new experiment. It
 builds `<tmp>/<repo>` for every covered repository except the knowledge
 base, from a shared clone checked out at the recorded sha with that
 repository's `dirty/<repo>.patch` applied; the original working trees are
@@ -464,34 +511,44 @@ its own `repos:`, else its arc's, else the default, like an experiment.
 `--parent`, repeatable, names a dataset it derives from (`parents:`); an
 unknown parent is refused.
 `slate data check|start|harvest <id>` are the
-experiment commands applied to a dataset record; a harvest that verifies
+experiment commands applied to a dataset record (`harvest` takes
+`--host-gone` as `exp harvest` does); a harvest that verifies
 every output writes `MANIFEST.json` (every file: path, size, sha256; a tree
 hash over all of them) and sets `status: built`.
 
 `slate data adopt <slug> --title T [--parent ID]... PATH...` registers a
-dataset that already exists: it hashes the files into `MANIFEST.json` and
-sets `status: built` with no recipe. A PATH that is a directory stands for
-every file beneath it. Nothing is written until every file has been hashed,
-so a failure leaves no half-made record. An adopted dataset is
+dataset that already exists: it hashes the files into `MANIFEST.json` (a
+lone file over `max_hash_mb` by size only; a directory's files whatever
+their size) and sets `status: built` with no recipe. A PATH that is a
+directory stands for every file beneath it. Nothing is written until every
+file has been read, so a failure leaves no half-made record. An adopted
+dataset is
 `rebuildable: no`. `--parent` names the dataset it replaces or was cut from,
 which is how a refreshed copy of a moving source is recorded: adopt it again
 as a child of the stale one.
 
 `rebuildable:` is computed, never typed: `yes` when the record has a recipe,
 its verdict is `reconstructable: yes`, and every `dataset:` parent is itself
-rebuildable or still matches its manifest.
+rebuildable or still matches its manifest. A recipe that reads a URI makes
+the dataset `rebuildable: no`, since a remote source is never verified; to
+keep such a source checkable, fetch it, register the copy with
+`slate data adopt` (the URL and retrieval date under Sources) and declare it
+as a parent.
 
 Any `inputs.txt` line may be `dataset:<slug>`. The check fails when the
 dataset does not exist or is not `built`, verifies its files against the
-manifest (size and mtime through the hash cache; a mismatch is rehashed),
-and records the dataset id and the sha256 of its `MANIFEST.json`. A dataset
+manifest (size, then the recorded hash through the hash cache for a file up
+to `max_hash_mb`, read once per size and mtime; a larger file is held to
+its size here and read in full only by `data verify`), and records the
+dataset id and the sha256 of its `MANIFEST.json`. A dataset
 that no longer matches its manifest adds a reason to the verdict.
 
 `slate data list` prints id, status, rebuildable, files, bytes and the
 number of records that use it. `slate data show <id>` prints its lineage:
 parents upward, and downward the datasets and experiments that declare it.
-`slate data verify <id>` rehashes every file against the manifest and exits
-`1` on any difference. `slate data mark|unmark <id>` mark a dataset for the
+`slate data verify <id>` rehashes every file the manifest hashed (whatever
+`max_hash_mb` is now), holds the rest to their size, and exits `1` on any
+difference. `slate data mark|unmark <id>` mark a dataset for the
 sweep; marking warns when any unmarked record uses it or it is not
 rebuildable.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import unittest
 
 from harness import Base
 from slate import arcs, datasets, gitstate, records, runs, tracker
@@ -184,6 +185,15 @@ class TestRebuildable(DataBase):
             fh.write("tampered seed longer")
         self.assertEqual(datasets.rebuildable(cfg, "child"), "no")
 
+    def test_not_rebuildable_when_a_source_is_a_uri(self):
+        kb = self.make_kb()
+        uri = "https://example.com/raw.csv"
+        cfg, dsid, rec = self.build_and_run(kb, slug="remote", inputs=uri + "\n")
+        self.assertEqual(datasets.status(rec), "built")  # the build itself is fine
+        self.assertEqual(datasets.rebuildable(cfg, dsid), "no")  # its source is unverified
+        reasons = runs._load_provenance(rec)["reconstructable_reasons"]
+        self.assertIn(f"unverified URI input: {uri}", reasons)
+
 
 class TestListShowVerify(DataBase):
     def test_list_columns(self):
@@ -287,6 +297,104 @@ class TestAdoptDirectory(DataBase):
         with self.assertRaises(OSError):
             datasets.adopt(cfg, "d", "T", [src])
         self.assertFalse(os.path.exists(cfg.dataset_dir("d")))
+
+
+class TestHashCap(DataBase):
+    """The walk hashes every file; verification holds a file to what its record says."""
+
+    def test_directory_adopted_under_a_low_cap_verifies(self):
+        # Issue #4: the walk hashed every file while verify applied the cap, so
+        # a file over max_hash_mb was reported as 'hash changed' untouched.
+        kb = self.make_kb(extra_toml="\n[experiment]\nmax_hash_mb = 0\n")
+        cfg = self.cfg(kb)
+        src = TestAdoptDirectory._tree(self)
+        dsid, rec = datasets.adopt(cfg, "big", "Big", [src])
+        man = datasets.read_manifest(rec)
+        self.assertTrue(all(re.match(r"^[0-9a-f]{64}$", f["sha256"]) for f in man["files"]))
+        ok, diffs, n, _b = datasets.verify(cfg, rec)
+        self.assertTrue(ok, diffs)
+        self.assertEqual(n, 2)
+        r = self.cli_run("data", "verify", "big", "--kb", kb)
+        self.assertEqual(r.code, 0, r.out)
+        ok2, diffs2 = datasets.matches_via_cache(cfg, rec, runs.HashCache(cfg))
+        self.assertTrue(ok2, diffs2)
+        # Same length, different bytes: `data verify` reads the file and catches
+        # it; the pre-run gate holds a file over the cap to its size only, and
+        # reads it once the cap allows.
+        a = os.path.join(src, "a.txt")
+        with open(a, "w") as fh:
+            fh.write("aab")
+        _ok, diffs, _n, _b = datasets.verify(cfg, rec)
+        self.assertEqual(diffs, [f"hash changed: {a}"])
+        ok3, _diffs3 = datasets.matches_via_cache(cfg, rec, runs.HashCache(cfg))
+        self.assertTrue(ok3)
+        full = self.cfg(kb)
+        full.max_hash_mb = 4096
+        _ok, diffs4 = datasets.matches_via_cache(full, rec, runs.HashCache(full))
+        self.assertEqual(diffs4, diffs)
+
+    def test_experiment_check_passes_on_a_dataset_adopted_under_a_low_cap(self):
+        # The symptom in issue #4, end to end: every experiment declaring the
+        # dataset failed its pre-run check with 'hash changed'.
+        kb = self.make_kb(extra_toml="\n[experiment]\nmax_hash_mb = 0\n")
+        cfg = self.cfg(kb)
+        src = TestAdoptDirectory._tree(self)
+        datasets.adopt(cfg, "big", "Big", [src])
+        cfg, eid, rec = TestDatasetInput._exp_with_dataset(self, kb, "dataset:big\n")
+        ok, lines = runs.check(cfg, rec)
+        self.assertTrue(ok, lines)
+        prov = runs._load_provenance(rec)
+        entry = [e for e in prov["inputs"] if e["kind"] == "dataset"][0]
+        self.assertTrue(entry["matches"])
+        self.assertNotIn(
+            "dataset no longer matches its manifest: big", prov["reconstructable_reasons"]
+        )
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_unreadable_file_is_reported_by_verify(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        src = TestAdoptDirectory._tree(self)
+        _id, rec = datasets.adopt(cfg, "d", "D", [src])
+        bad = os.path.join(src, "a.txt")
+        os.chmod(bad, 0)
+        self.addCleanup(os.chmod, bad, 0o644)
+        ok, diffs, _n, _b = datasets.verify(cfg, rec)
+        self.assertFalse(ok)
+        self.assertEqual(diffs, [f"unreadable: {bad}"])
+
+    def test_lone_file_over_the_cap_is_held_to_its_size(self):
+        kb = self.make_kb(extra_toml="\n[experiment]\nmax_hash_mb = 0\n")
+        cfg = self.cfg(kb)
+        raw = os.path.join(self.tmp, "raw.bin")
+        with open(raw, "w") as fh:
+            fh.write("payload")
+        _id, rec = datasets.adopt(cfg, "lone", "Lone", [raw])
+        self.assertIsNone(datasets.read_manifest(rec)["files"][0]["sha256"])  # sized only
+        self.assertTrue(datasets.verify(cfg, rec)[0])
+        with open(raw, "w") as fh:
+            fh.write("PAYLOAD")  # same size: nothing recorded can tell
+        self.assertTrue(datasets.verify(cfg, rec)[0])
+        with open(raw, "w") as fh:
+            fh.write("longer payload")
+        _ok, diffs, _n, _b = datasets.verify(cfg, rec)
+        self.assertEqual(diffs, [f"size changed: {raw}"])
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_adoption_warms_the_cache_the_input_check_reads(self):
+        kb = self.make_kb()
+        cfg = self.cfg(kb)
+        src = TestAdoptDirectory._tree(self)
+        datasets.adopt(cfg, "src", "Source", [src])
+        # Unreadable now: a check that had to hash again would fail here.
+        for name in ("a.txt", os.path.join("nested", "b.txt")):
+            os.chmod(os.path.join(src, name), 0)
+            self.addCleanup(os.chmod, os.path.join(src, name), 0o644)
+        cfg, eid, rec = TestDatasetInput._exp_with_dataset(self, kb, "dataset:src\n")
+        ok, _lines = runs.check(cfg, rec)
+        self.assertTrue(ok)
+        entry = [e for e in runs._load_provenance(rec)["inputs"] if e["kind"] == "dataset"][0]
+        self.assertTrue(entry["matches"])
 
 
 class TestParents(DataBase):
